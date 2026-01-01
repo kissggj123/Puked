@@ -93,6 +93,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         "name": name,
       };
       await _pbService.pb.collection('users').create(body: body);
+
       // 注册成功后自动登录
       await login(email, password);
     } on ClientException catch (e) {
@@ -103,6 +104,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
           errorKey = 'error_email_taken';
         } else if (data.containsKey('password')) {
           errorKey = 'error_password_too_short';
+        } else if (data.isNotEmpty) {
+          errorKey = 'error_${data.keys.first}';
         }
       }
       state = state.copyWith(isLoading: false, error: errorKey);
