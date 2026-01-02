@@ -11,7 +11,6 @@
 - **Camera Support**: Added direct photo taking capability for avatar updates.
 - **Permissions**: Added missing iOS permission descriptions (`NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`) to `Info.plist`.
 - **Localization**: Added translation keys for avatar and nickname actions (`pick_from_gallery`, `take_photo`, `edit_avatar`, `set_nickname`, etc.).
-- **Credits**: Added "Modified by CanguroMIO" footer in Settings.
 
 ### Changed
 - **Map Provider**: Switched tile provider source to `wprd0{s}.is.autonavi.com` for better stability and anti-scraping resilience.
@@ -24,7 +23,6 @@
 ### Fixed
 - **iOS Build**:
     - Fixed `ffi` Ruby gem compatibility issues on Apple Silicon (M1/M2/M3) Macs.
-    - Resolved `DVTBuildVersion` errors by correcting missing `version` numbers in `pubspec.yaml`.
     - Fixed `RetinaMode` constant instantiation syntax error.
 - **iPad UX**: Fixed an issue where `showDialog` (Delete/Upload) would auto-dismiss on iPad due to accidental barrier touches by setting `barrierDismissible: false`.
 - **Data Accuracy**: Fixed the visual offset (~500m) between the recorded trajectory and the map background.
