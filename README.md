@@ -1,29 +1,30 @@
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-## [2.0.1] - 2026-01-01
-
-### Changed
-- **Algorithm Tuning**: Adjusted rapid acceleration/deceleration threshold to 0.32G and optimized low-speed speed multiplier (0.8) to reduce false positives during vehicle startup.
-- **Jerk Detection**: Optimized jerk threshold and added sensitivity level support.
-
-## [2.0.0] - 2025-12-31
+## [2.0.1-CanguroMIO修改版] - 2026-01-01
 
 ### Added
-- **The Arena**: Global leaderboard for autonomous driving brands (Tesla, Xpeng, Nio, Huawei, etc.).
-- **Cloud Sync**: PocketBase integration for trip backup, multi-device sync, and public sharing.
-- **Landscape HUD**: Dedicated UI layout for car-mounted usage with full-screen map and real-time HUD.
-- **GitHub Actions**: Automated APK build pipeline (`puked-apk-build.yml`).
-- **Enhanced Visuals**: Material 3 integration with Glassmorphism effects and haptic feedback.
+- **Hybrid Map Mode**: Introduced a dual-layer map system using **AutoNavi (HighDe/Amap) Satellite** imagery as the base and a transparent **Road Network** overlay for better visibility of new compounds/streets.
+- **Coordinate Rectification**: Implemented **GCJ-02 (Mars Coordinate System)** conversion algorithm (`CoordConv`).
+    - Automatically corrects GPS (WGS-84) offsets for Tracks, Markers, and Current Position to perfectly align with Chinese map data.
+- **Local Customization**:
+    - **Local Nickname**: Users can now set a custom nickname stored locally, overriding the cloud username in the UI.
+    - **Local Avatar**: Added support for setting a local profile picture via Camera or Gallery.
+- **Image Editor**: Integrated `image_cropper` to allow 1:1 cropping, zooming, and rotating when uploading avatars.
+- **Camera Support**: Added direct photo taking capability for avatar updates.
+- **Permissions**: Added missing iOS permission descriptions (`NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`) to `Info.plist`.
+- **Localization**: Added translation keys for avatar and nickname actions (`pick_from_gallery`, `take_photo`, `edit_avatar`, `set_nickname`, etc.).
+- **Credits**: Added "Modified by CanguroMIO" footer in Settings.
 
 ### Changed
-- **Minimum Requirements**: Updated to Flutter 3.16+ and Dart 3.2+.
-- **Android Target**: Updated `compileSdk` and `targetSdk` to 36.
-- **Sensor Engine**: Refactored coordinate system transformation (Phone -> Vehicle) for better accuracy.
-- **Build Optimization**: Adjusted JVM memory settings in `gradle.properties` for CI compatibility.
+- **Map Provider**: Switched tile provider source to `wprd0{s}.is.autonavi.com` for better stability and anti-scraping resilience.
+- **Map Interaction**:
+    - **Anti-White Screen**: Configured `maxNativeZoom: 18` and `maxZoom: 22` to enable auto-scaling of tiles, preventing white screens at high zoom levels.
+    - **Performance**: Optimized `HttpClient` concurrency (`maxConnectionsPerHost: 15`) and disabled `RetinaMode` to prevent invalid tile requests.
+    - **Anti-Scraping**: Implemented browser-like `User-Agent` headers in tile requests to prevent server blocking (missing tiles).
+- **Settings UI**: Refined the User Profile card to support tap-to-edit interactions for both Avatar and Nickname.
 
 ### Fixed
-- **Code Quality**: Fixed 37 lint warnings including unused imports, unused variables, and deprecated API calls.
-- **API Updates**: Migrated PocketBase SDK calls from `getDataValue` to `get<T>`.
-- **Formatting**: Standardized code formatting across the entire project.
+- **iOS Build**:
+    - Fixed `ffi` Ruby gem compatibility issues on Apple Silicon (M1/M2/M3) Macs.
+    - Resolved `DVTBuildVersion` errors by correcting missing `version` numbers in `pubspec.yaml`.
+    - Fixed `RetinaMode` constant instantiation syntax error.
+- **iPad UX**: Fixed an issue where `showDialog` (Delete/Upload) would auto-dismiss on iPad due to accidental barrier touches by setting `barrierDismissible: false`.
+- **Data Accuracy**: Fixed the visual offset (~500m) between the recorded trajectory and the map background.
