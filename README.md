@@ -7,85 +7,54 @@
 
 ---
 
-## [2.0.1-canguroMIO] - 2026-01-01
+## [2.1.0-canguroMIO] - 2026-01-04
 
-### ✨ Added | 新增
+### 🚀 Core Mechanics | 核心机制
 
-* **Hybrid Map Mode（混合地图模式）**
-  Uses **AutoNavi (Amap) Satellite imagery** as the base layer with a transparent **Road Network overlay**, improving readability of newly built areas.
-  使用 **高德卫星图** 作为底图，并叠加透明 **道路网图层**，更清晰展示新建区域。
+*   **GPS + Inertial Fusion (Kalman Filter)**
+    Implemented a professional-grade **Physics-Enhanced PV Model** (Position-Velocity) Kalman Filter.
+    *   **Dead Reckoning**: Uses `speed` and `heading` from the A16 chip to predict trajectory during signal loss (tunnels).
+    *   **ZUPT (Zero Velocity Update)**: Forces position lock when speed < 0.4m/s, eliminating "ghost mileage" at red lights.
+    *   **Adaptive Noise**: Dynamically adjusts trust between GPS and Inertial sensors based on `speedAccuracy` (L5 GPS feature).
+    **引入专业级 GPS + 惯性导航融合算法 (卡尔曼滤波)**。
+    *   **航位推算**: 利用 A16 芯片的速度与航向数据，在信号丢失（如隧道）时惯性预测轨迹。
+    *   **零速修正 (ZUPT)**: 低速状态下强制锁定坐标，彻底消除红绿灯停车时的“幽灵里程”漂移。
+    *   **自适应抗噪**: 根据 L5 双频 GPS 的精度动态调整信任权重，拒绝信号飞点。
 
-* **GCJ-02 Coordinate Rectification（火星坐标纠偏）**
-  Implemented `CoordConv` to automatically convert GPS (WGS-84) coordinates for tracks, markers, and current position, eliminating offsets on Chinese maps.
-  引入 `CoordConv` 实现 **GCJ-02 坐标转换**，修复轨迹、标记点与当前位置在国内地图中的偏移问题。
+*   **100Hz Sensor Engine (100Hz 传感器引擎)**
+    Upgraded `SensorEngine` sampling rate from 60Hz to **100Hz (10ms)** to fully utilize iPhone 14 Pro hardware.
+    *   Added **Median Filter (Window=9)** and **Noise Gate (0.03G)** to eliminate road vibration noise while capturing micro-jerks.
+    **传感器采样率提升至 100Hz (10ms)**，榨干 iPhone 14 Pro 性能。
+    *   增加 **中值滤波** 与 **噪音门限**，有效过滤路面碎石震动，同时精准捕捉微小顿挫。
 
-* **Local User Profile Overrides（本地用户信息覆盖）**
+### 🎨 UI/UX | 界面与体验
 
-  * Local nickname stored on-device, overriding cloud username in UI
-    支持本地昵称设置，界面优先显示本地昵称
-  * Local avatar selection via camera or photo gallery
-    支持通过相机或相册设置本地头像
+*   **"Course Up" Navigation Mode（车头朝上模式）**
+    Map now rotates smoothly to align with the vehicle's heading when speed > 3km/h. Locks rotation when stationary to prevent jitter.
+    **地图随动旋转**：行驶速度 > 3km/h 时地图自动旋转保持车头朝上（导航视角）；静止时锁定角度防止乱转。
 
-* **Avatar Image Editing（头像编辑）**
-  Integrated `image_cropper` for 1:1 cropping, zooming, and rotation during avatar upload.
-  集成 `image_cropper`，支持头像 1:1 裁剪、缩放与旋转。
+*   **Pro Telemetry Dashboard（专业遥测仪表盘）**
+    Redesigned the top HUD into a unified frosted-glass panel containing:
+    *   **G-Force Ball** with Compass Ring.
+    *   **Real-time G-Values** (Long/Lat/Vert) with progress bars and dynamic colors.
+    *   **Waveform Chart** (powered by `fl_chart`) visualizing 100Hz data.
+    *   **Precision Data**: Speed, Altitude, Heading, and 5-decimal Coordinates.
+    **重构 HUD 仪表盘**：采用磨砂玻璃拟态设计，整合 **G力球**、**实时三轴 G 值**、**100Hz 波形图** 以及 **精密经纬度/海拔** 数据。
 
-* **Camera Integration（相机支持）**
-  Added direct camera capture for avatar updates.
-  新增头像拍照功能。
+*   **Floating Control Dock（悬浮控制台）**
+    Replaced bulky bottom buttons with a minimalist, horizontal scrolling **Neon-style Pill Dock**.
+    底部控制栏升级为 **霓虹风格胶囊悬浮坞**，支持横向滚动，视觉更通透。
 
-* **iOS Permissions（iOS 权限补全）**
-  Added missing permission descriptions to `Info.plist`:
+*   **In-App Overlay Notifications（应用内胶囊通知）**
+    Replaced system dialogs with elegant top-screen overlay capsules for event triggers (e.g., Rapid Accel), auto-dismissing in 2.5s.
+    事件触发时不再弹出系统框，改为屏幕顶部优雅的 **胶囊浮窗提醒**，2.5秒后自动消失，不打断驾驶体验。
 
-  * `NSCameraUsageDescription`
-  * `NSPhotoLibraryUsageDescription`
+### 🛠 Technical | 技术调整
 
-* **Localization Keys（本地化文案）**
-  Added translation keys for avatar and nickname related actions (e.g. `pick_from_gallery`, `take_photo`, `edit_avatar`, `set_nickname`).
+*   **Dependency Updates**
+    Added `fl_chart` for high-performance waveform rendering and `flutter_secure_storage` for persistent local data.
+    新增 `fl_chart` 用于高性能图表渲染；引入 `flutter_secure_storage` 增强本地数据持久化。
 
----
-
-### 🔧 Changed | 调整
-
-* **Map Tile Source**
-  Switched tile provider to `wprd0{s}.is.autonavi.com` for improved stability and reduced tile blocking.
-  地图瓦片源切换至 `wprd0{s}.is.autonavi.com`，提升稳定性并减少瓦片缺失。
-
-* **Map Zoom & Rendering Behavior**
-
-  * Set `maxNativeZoom: 18` and `maxZoom: 22` to prevent white screens at high zoom levels
-    通过限制原生缩放级别，避免高倍缩放白屏
-  * Disabled `RetinaMode` to avoid invalid tile requests
-    关闭 `RetinaMode`，避免无效瓦片请求
-  * Increased HTTP concurrency (`maxConnectionsPerHost: 15`) for smoother tile loading
-    提升瓦片加载并发性能
-
-* **Anti-Scraping Mitigation**
-  Added browser-like `User-Agent` headers to tile requests to reduce server-side blocking.
-  为瓦片请求添加浏览器风格 `User-Agent`，降低反爬拦截概率。
-
-* **Profile UI Interaction**
-  User profile card now supports tap-to-edit for both avatar and nickname.
-  用户资料卡片支持点击头像或昵称直接编辑。
-
----
-
-### 🐛 Fixed | 修复
-
-* **iOS Build (Apple Silicon)**
-  Fixed `ffi` Ruby gem compatibility issues on M1/M2/M3 Macs.
-  修复 Apple Silicon 设备上的 `ffi` 兼容性问题。
-
-* **RetinaMode Instantiation Bug**
-  Fixed incorrect constant initialization syntax.
-  修复 `RetinaMode` 常量初始化错误。
-
-* **iPad Dialog Auto-Dismiss**
-  Prevented dialogs from closing unintentionally on iPad by setting `barrierDismissible: false`.
-  修复 iPad 上弹窗误触背景自动关闭的问题。
-
-* **Track-to-Map Offset (~500m)**
-  Fixed visible offset between recorded tracks and map background.
-  修复轨迹与地图背景之间约 500 米的偏移问题。
-
----
+*   **Code Architecture**
+    Decoupled UI rendering (RecordingScreen) from algorithm logic (RecordingProvider), ensuring 120Hz UI smoothness even with heavy math calculations.
+    **架构解耦**：将 UI 渲染与算法逻辑分离，确保在进行高频卡尔曼滤波计算时，UI 依然保持 120Hz 满帧运行。
