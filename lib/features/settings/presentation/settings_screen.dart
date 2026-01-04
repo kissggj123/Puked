@@ -4,6 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_cropper/image_cropper.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+// 🟢 1. 引入 path_provider 用于获取 iPhone 永久文件目录
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+
 import 'package:puked/services/update_service.dart';
 import 'package:puked/features/auth/providers/auth_provider.dart';
 import 'package:puked/features/auth/presentation/login_screen.dart';
@@ -21,12 +25,30 @@ final packageInfoProvider = FutureProvider<PackageInfo>((ref) async {
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
+  // 🟢 2. 核心方法：将图片永久保存到 iPhone 文档目录
+  Future<String?> _saveToPermanentStorage(String sourcePath) async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      // 使用时间戳防止文件名冲突
+      final fileName = 'avatar_${DateTime.now().millisecondsSinceEpoch}${p.extension(sourcePath)}';
+      final savedPath = p.join(directory.path, fileName);
+      
+      // 复制文件到永久目录
+      await File(sourcePath).copy(savedPath);
+      return savedPath;
+    } catch (e) {
+      debugPrint('Error saving avatar locally: $e');
+      return null;
+    }
+  }
+
   // 裁剪图片逻辑
   Future<void> _cropImage(BuildContext context, WidgetRef ref, String sourcePath) async {
     try {
       final i18n = ref.read(i18nProvider);
       final croppedFile = await ImageCropper().cropImage(
         sourcePath: sourcePath,
+        // 锁定 1:1 正方形
         aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
         uiSettings: [
           AndroidUiSettings(
@@ -39,14 +61,20 @@ class SettingsScreen extends ConsumerWidget {
           ),
           IOSUiSettings(
             title: i18n.t('edit_avatar') ?? 'Edit Avatar',
-            aspectRatioLockEnabled: true,
+            aspectRatioLockEnabled: true, // 强制正方形
             resetAspectRatioEnabled: false,
           ),
         ],
       );
 
       if (croppedFile != null) {
-        ref.read(settingsProvider.notifier).setAvatarPath(croppedFile.path);
+        // 🟢 3. 先保存到文档目录，再更新 Provider
+        // 这样即使 iOS 清理了 tmp 目录，头像也不会丢
+        final permanentPath = await _saveToPermanentStorage(croppedFile.path);
+        
+        if (permanentPath != null) {
+          ref.read(settingsProvider.notifier).setAvatarPath(permanentPath);
+        }
       }
     } catch (e) {
       debugPrint('Crop error: $e');
@@ -119,7 +147,7 @@ class SettingsScreen extends ConsumerWidget {
     );
   }
 
-  // 🟢 新增：修改昵称对话框
+  // 修改昵称对话框
   Future<void> _showNicknameDialog(BuildContext context, WidgetRef ref) async {
     final i18n = ref.read(i18nProvider);
     final settings = ref.read(settingsProvider);
@@ -128,11 +156,11 @@ class SettingsScreen extends ConsumerWidget {
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(i18n.t('set_nickname') ?? 'Set Nickname'), // 记得加 Key
+        title: Text(i18n.t('set_nickname') ?? 'Set Nickname'),
         content: TextField(
           controller: controller,
           decoration: InputDecoration(
-            hintText: i18n.t('nickname_hint') ?? 'Enter custom nickname', // 记得加 Key
+            hintText: i18n.t('nickname_hint') ?? 'Enter custom nickname',
             border: const OutlineInputBorder(),
             suffixIcon: IconButton(
               icon: const Icon(Icons.clear),
@@ -144,7 +172,6 @@ class SettingsScreen extends ConsumerWidget {
         actions: [
           TextButton(
             onPressed: () {
-              // 重置为空
               ref.read(settingsProvider.notifier).setNickname(null);
               Navigator.pop(ctx);
             },
@@ -189,10 +216,11 @@ class SettingsScreen extends ConsumerWidget {
     final packageInfo = ref.watch(packageInfoProvider);
     final cloudAvatarUrl = ref.watch(pbServiceProvider).currentAvatarUrl;
 
+    // 判断是否显示编辑笔：如果没有本地头像 且 没有云端头像，才显示笔
     final bool hasAvatar = (settings.avatarPath != null && File(settings.avatarPath!).existsSync()) || 
                            (cloudAvatarUrl != null && cloudAvatarUrl.isNotEmpty);
 
-    // 🟢 计算显示名称：优先显示本地昵称，其次云端名字
+    // 名字显示逻辑：优先显示本地昵称，其次显示云端名字，最后显示默认
     final displayName = settings.nickname ?? auth.user?.getStringValue('name') ?? i18n.t('user');
 
     return Scaffold(
@@ -221,6 +249,7 @@ class SettingsScreen extends ConsumerWidget {
                 )
               else
                 ListTile(
+                  // 头像区域
                   leading: GestureDetector(
                     onTap: () => _showAvatarPicker(context, ref),
                     child: Stack(
@@ -256,7 +285,7 @@ class SettingsScreen extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  // 🟢 修改：支持点击名字修改昵称
+                  // 名字区域
                   title: GestureDetector(
                     onTap: () => _showNicknameDialog(context, ref),
                     child: Row(
@@ -273,7 +302,7 @@ class SettingsScreen extends ConsumerWidget {
                         Icon(
                           Icons.edit_note, 
                           size: 16, 
-                          color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
+                          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
                         ),
                         if (auth.isPro) ...[
                           const SizedBox(width: 8),
@@ -384,7 +413,7 @@ class SettingsScreen extends ConsumerWidget {
 
               const Divider(),
 
-              // 账号关联的智驾设置
+              // 账号关联的智驾设置 (保留原始云端同步逻辑)
               if (auth.isAuthenticated) ...[
                 _buildSectionHeader(context, i18n.t('my_car')),
                 ListTile(

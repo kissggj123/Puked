@@ -1,6 +1,16 @@
+import 'dart:async';
+import 'dart:ui';
+import 'dart:math' as math;
+import 'dart:collection';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path; 
+
 import 'package:puked/common/widgets/g_force_ball.dart';
 import 'package:puked/common/widgets/sensor_waveform.dart';
 import 'package:puked/common/widgets/trip_map_view.dart';
@@ -9,9 +19,9 @@ import 'package:puked/features/recording/providers/recording_provider.dart';
 import 'package:puked/features/settings/presentation/settings_screen.dart';
 import 'package:puked/features/recording/presentation/vehicle_info_screen.dart';
 import 'package:puked/common/utils/i18n.dart';
+import 'package:puked/models/db_models.dart'; 
 import 'package:puked/models/trip_event.dart';
 import 'package:puked/services/update_service.dart';
-import 'dart:collection';
 
 class RecordingScreen extends ConsumerStatefulWidget {
   const RecordingScreen({super.key});
@@ -21,17 +31,114 @@ class RecordingScreen extends ConsumerStatefulWidget {
 }
 
 class _RecordingScreenState extends ConsumerState<RecordingScreen> {
-  bool _isSensorFocused = false;
+  // 默认展开仪表盘
+  bool _isStatsExpanded = true; 
+  final MapController _mapController = MapController();
+  int _lastEventCount = 0;
 
   @override
   void initState() {
     super.initState();
-    // 启动时检查更新：延迟3秒，确保进入首页后环境已完全准备好
     Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) {
-        UpdateService.checkUpdate(context);
-      }
+      if (mounted) UpdateService.checkUpdate(context);
     });
+  }
+
+  // 🟢 事件提醒弹窗 (HUD Notification)
+  void _showEventNotification(BuildContext context, RecordedEvent event) {
+    Color color;
+    IconData icon;
+    String labelKey;
+
+    switch (event.type) {
+      case 'rapidAcceleration':
+        color = const Color(0xFFFF9500);
+        icon = Icons.speed;
+        labelKey = 'rapid_accel';
+        break;
+      case 'rapidDeceleration':
+        color = const Color(0xFFFF3B30);
+        icon = Icons.trending_down;
+        labelKey = 'rapid_decel';
+        break;
+      case 'bump':
+        color = const Color(0xFF5856D6);
+        icon = Icons.vibration;
+        labelKey = 'bump';
+        break;
+      case 'wobble':
+        color = const Color(0xFF007AFF);
+        icon = Icons.waves;
+        labelKey = 'wobble';
+        break;
+      case 'jerk':
+        color = const Color(0xFFE91E63);
+        icon = Icons.flash_on;
+        labelKey = 'jerk';
+        break;
+      default:
+        color = Colors.grey;
+        icon = Icons.info;
+        labelKey = 'unknown_event';
+    }
+    
+    final i18n = ref.read(i18nProvider);
+    final overlay = Overlay.of(context);
+    late OverlayEntry entry;
+    
+    entry = OverlayEntry(
+      builder: (context) => Positioned(
+        top: MediaQuery.of(context).padding.top + 70, // 位于顶部栏下方
+        left: 0, 
+        right: 0,
+        child: Center(
+          child: Material(
+            color: Colors.transparent,
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.0, end: 1.0),
+              duration: const Duration(milliseconds: 400),
+              curve: Curves.elasticOut,
+              builder: (context, val, child) => Transform.scale(
+                scale: val,
+                child: Opacity(
+                  opacity: val.clamp(0.0, 1.0),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(30),
+                      border: Border.all(color: color.withValues(alpha: 0.6), width: 1.5),
+                      boxShadow: [
+                        BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 20, spreadRadius: 2)
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(icon, color: color, size: 24),
+                        const SizedBox(width: 12),
+                        Text(
+                          i18n.t(labelKey).toUpperCase(),
+                          style: const TextStyle(
+                            color: Colors.white, 
+                            fontWeight: FontWeight.w900, 
+                            fontSize: 16,
+                            letterSpacing: 1.2
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    overlay.insert(entry);
+    Future.delayed(const Duration(milliseconds: 2500), () => entry.remove());
   }
 
   @override
@@ -40,31 +147,78 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
     final isCalibrating = recordingState.isCalibrating;
     final i18n = ref.watch(i18nProvider);
 
+    // 🟢 最终修正：地图随动旋转逻辑 (Course Up)
+    ref.listen(recordingProvider, (prev, next) {
+      // 1. 事件弹窗逻辑 (保持不变)
+      if (next.events.length > _lastEventCount) {
+        _lastEventCount = next.events.length;
+        if (next.isRecording && next.events.isNotEmpty) {
+           _showEventNotification(context, next.events.last);
+        }
+      }
+      
+      // 2. 地图旋转逻辑 (修复了无限旋转 Bug)
+      final pos = next.currentPosition;
+      if (pos != null) {
+        final speedKmh = pos.speed * 3.6;
+        
+        double targetRotation;
+
+        // 只有速度大于 10km/h 时，才强制改变地图方向
+        if (speedKmh > 10.0) {
+           // 行驶中：让地图逆时针旋转，实现"车头朝上"
+           targetRotation = -pos.heading;
+        } else {
+           // 静止/蠕行时：锁定当前地图角度，绝对不许动！
+           // ⚠️ 关键点：这里直接取 current rotation，不要加负号，否则会左右横跳
+           targetRotation = _mapController.camera.rotation;
+        }
+        
+        _mapController.moveAndRotate(
+          LatLng(pos.latitude, pos.longitude),
+          17.0, // 锁定缩放级别
+          targetRotation 
+        );
+      }
+    });
+
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: Theme.of(context).brightness == Brightness.dark
-          ? SystemUiOverlayStyle.light
-          : SystemUiOverlayStyle.dark,
+      value: SystemUiOverlayStyle.dark, 
       child: Scaffold(
-        resizeToAvoidBottomInset: false, // 防止键盘弹出引起布局变化
+        resizeToAvoidBottomInset: false,
         body: Stack(
           children: [
-            // 基础布局层
-            OrientationBuilder(
-              builder: (context, orientation) {
-                if (orientation == Orientation.portrait) {
-                  return SafeArea(
-                    child: _buildPortraitLayout(
-                        context, ref, recordingState, i18n),
-                  );
-                } else {
-                  // 横屏下自定义 SafeArea 处理，保证全屏地图感
-                  return _buildLandscapeLayout(
-                      context, ref, recordingState, i18n);
-                }
-              },
+            Positioned.fill(
+              child: TripMapView(
+                trajectory: recordingState.trajectory,
+                events: recordingState.events,
+                currentPosition: recordingState.currentPosition,
+                mapController: _mapController,
+              ),
             ),
 
-            // 校准遮罩层
+            SafeArea(
+              child: Column(
+                children: [
+                  _buildTopBar(context, i18n, recordingState),
+                  
+                  AnimatedCrossFade(
+                    firstChild: const SizedBox(width: double.infinity), 
+                    secondChild: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: _buildProDashboard(context, i18n, recordingState),
+                    ),
+                    crossFadeState: _isStatsExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                    duration: const Duration(milliseconds: 300),
+                  ),
+
+                  const Spacer(),
+
+                  _buildBottomControls(context, ref, recordingState, i18n),
+                ],
+              ),
+            ),
+
             if (isCalibrating) _buildCalibrationOverlay(context, i18n),
           ],
         ),
@@ -72,781 +226,444 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
     );
   }
 
-  Widget _buildPortraitLayout(BuildContext context, WidgetRef ref,
-      RecordingState recordingState, dynamic i18n) {
-    final isRecording = recordingState.isRecording;
-    final isCalibrating = recordingState.isCalibrating;
-    const double spacing = 16.0;
-    const double smallCardHeight = 140.0;
-
+  Widget _buildTopBar(BuildContext context, dynamic i18n, RecordingState state) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildHeader(context, i18n),
-          const SizedBox(height: 8), // 统一标题和卡片间距
-          Expanded(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 600),
-              switchInCurve: Curves.easeOutBack,
-              switchOutCurve: Curves.easeIn,
-              transitionBuilder: (Widget child, Animation<double> animation) {
-                return FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0, 0.05),
-                      end: Offset.zero,
-                    ).animate(animation),
-                    child: ScaleTransition(
-                      scale: Tween<double>(begin: 0.95, end: 1.0)
-                          .animate(animation),
-                      child: child,
-                    ),
-                  ),
-                );
-              },
-              child: _isSensorFocused
-                  ? Column(
-                      key: const ValueKey('sensor_focused'),
-                      children: [
-                        // 1. 传感器展示区 (大)
-                        Expanded(
-                          child: _buildFocusedSensorContent(context, i18n,
-                              noMargin: true),
-                        ),
-                        const SizedBox(height: spacing),
-                        // 2. 地图缩小 (小)
-                        GestureDetector(
-                          key: const ValueKey('map_small'),
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => setState(() => _isSensorFocused = false),
-                          child: SizedBox(
-                            height: smallCardHeight,
-                            child: _buildMapSection(recordingState,
-                                isLandscape: false, noMargin: true),
-                          ),
-                        ),
-                        const SizedBox(height: spacing),
-                        _buildControlSection(context, ref, recordingState,
-                            isRecording, isCalibrating, i18n,
-                            noPadding: true),
-                      ],
-                    )
-                  : Column(
-                      key: const ValueKey('map_focused'),
-                      children: [
-                        // 1. 地图展示 (大)
-                        Expanded(
-                          child: _buildMapSection(recordingState,
-                              isLandscape: false, noMargin: true),
-                        ),
-                        const SizedBox(height: spacing),
-                        // 2. 传感器区域 (小)
-                        _buildSensorSection(context, i18n,
-                            height: smallCardHeight, noMargin: true),
-                        const SizedBox(height: spacing),
-                        _buildControlSection(context, ref, recordingState,
-                            isRecording, isCalibrating, i18n,
-                            noPadding: true),
-                      ],
-                    ),
-            ),
-          ),
-          const SizedBox(height: spacing), // 底部留白
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFocusedSensorContent(BuildContext context, dynamic i18n,
-      {bool noMargin = false, bool isLandscape = false}) {
-    return GestureDetector(
-      key: ValueKey('focused_sensor_${isLandscape ? 'land' : 'port'}'),
-      behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _isSensorFocused = false),
-      child: Container(
-        margin: noMargin
-            ? EdgeInsets.zero
-            : const EdgeInsets.symmetric(horizontal: 16),
-        padding: EdgeInsets.all(isLandscape ? 12 : 16),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardTheme.color,
-          borderRadius: BorderRadius.circular(24),
-          border: null,
-          boxShadow: [
-            if (isLandscape)
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.15),
-                blurRadius: 20,
-                offset: const Offset(0, 10),
-              )
-          ],
-        ),
-        child: Consumer(
-          builder: (context, ref, child) {
-            final sensorDataAsync = ref.watch(sensorStreamProvider);
-            return sensorDataAsync.maybeWhen(
-              data: (data) {
-                final gX = data.processedAccel.x / 9.80665;
-                final gY = data.processedAccel.y / 9.80665;
-                final gZ = (data.processedAccel.z - 9.80665) / 9.80665;
-
-                return Column(
-                  children: [
-                    // 第一行：球体 + 实时 XYZ 参数
-                    Row(
-                      children: [
-                        GForceBall(
-                          acceleration: data.processedAccel,
-                          gyroscope: data.gyroscope,
-                          size: isLandscape
-                              ? 56
-                              : 64, // 进一步缩小球体 (从 64/72 降到 56/64)
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              _buildGValueRow(
-                                  "X (LAT)", gX, const Color(0xFFE57373)),
-                              const SizedBox(height: 2),
-                              _buildGValueRow(
-                                  "Y (LONG)", gY, const Color(0xFF81C784)),
-                              const SizedBox(height: 2),
-                              _buildGValueRow(
-                                  "Z (VERT)", gZ, const Color(0xFF64B5F6)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: isLandscape ? 8 : 12),
-                    // 第二、三行：波形图
-                    Expanded(
-                      flex: 6, // 再次增加图表权重 (从 5 提升到 6)
-                      child: _SensorWaveformSection(
-                        data: data,
-                        i18n: i18n,
-                        showAxes: true,
-                        isLandscape: isLandscape,
-                      ),
-                    ),
-                  ],
-                );
-              },
-              orElse: () => const Center(child: CircularProgressIndicator()),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildGValueRow(String label, double value, Color color) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label,
-            style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: color.withValues(alpha: 0.7),
-                letterSpacing: 0.5)),
-        Text("${value >= 0 ? '+' : ''}${value.toStringAsFixed(3)}G",
-            style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w900,
-                fontFamily: 'monospace')),
-      ],
-    );
-  }
-
-  Widget _buildLandscapeLayout(BuildContext context, WidgetRef ref,
-      RecordingState recordingState, dynamic i18n) {
-    final isRecording = recordingState.isRecording;
-    final isCalibrating = recordingState.isCalibrating;
-    const double spacing = 16.0;
-
-    // 计算地图中心偏移量
-    final screenWidth = MediaQuery.sizeOf(context).width;
-    const double mapShift = 168.0;
-
-    return Stack(
-      children: [
-        // 1. 背景地图层
-        Positioned(
-          left: -mapShift * 2,
-          top: 0,
-          bottom: 0,
-          width: screenWidth + mapShift * 2,
-          child: _buildMapSection(recordingState, isLandscape: true),
-        ),
-
-        // 2. GPS 调试面板 (独立定位，不随地图移动)
-        Positioned(
-          top: 12,
-          left: 12,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.4),
-                borderRadius: BorderRadius.circular(8)),
-            child: Text(
-              "GPS: ${recordingState.debugMessage}",
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 9,
-                  fontWeight: FontWeight.bold),
-            ),
-          ),
-        ),
-
-        // 3. 前台交互层
-        SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(
-                spacing / 2, spacing, spacing, spacing), // 减少左侧边距一半
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch, // 让子组件垂直铺满
-              children: [
-                // 左侧动态区域
-                Expanded(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 600),
-                    switchInCurve: Curves.easeOutBack,
-                    switchOutCurve: Curves.easeIn,
-                    transitionBuilder:
-                        (Widget child, Animation<double> animation) {
-                      return FadeTransition(
-                        opacity: animation,
-                        child: ScaleTransition(
-                          scale: Tween<double>(begin: 0.95, end: 1.0)
-                              .animate(animation),
-                          child: child,
-                        ),
-                      );
-                    },
-                    child: _isSensorFocused
-                        ? _buildFocusedSensorContent(context, i18n,
-                            noMargin: true, isLandscape: true)
-                        : Align(
-                            key: const ValueKey('landscape_hud_align'),
-                            alignment: Alignment.bottomLeft,
-                            child: _buildLandscapeHUD(context, i18n),
-                          ),
-                  ),
-                ),
-                const SizedBox(width: spacing),
-                // 右侧面板
-                _buildLandscapeControlConsole(context, ref, recordingState,
-                    isRecording, isCalibrating, i18n),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLandscapeHUD(BuildContext context, dynamic i18n) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return GestureDetector(
-      key: const ValueKey('landscape_hud'),
-      behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _isSensorFocused = true),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          color: isDark
-              ? Colors.black.withValues(alpha: 0.5)
-              : Colors.white.withValues(alpha: 0.7),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: isDark
-                ? Colors.white.withValues(alpha: 0.1)
-                : Colors.black.withValues(alpha: 0.05),
-            width: 0.5,
-          ),
-          boxShadow: [
-            if (!isDark)
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-          ],
-        ),
-        child: Consumer(
-          builder: (context, ref, child) {
-            final sensorDataAsync = ref.watch(sensorStreamProvider);
-            return sensorDataAsync.maybeWhen(
-              data: (data) => Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  GForceBall(
-                    acceleration: data.processedAccel,
-                    gyroscope: data.gyroscope,
-                    size: 64,
-                  ),
-                  const SizedBox(width: 20),
-                  SizedBox(
-                    width: 150,
-                    height: 80,
-                    child: _SensorWaveformSection(
-                        data: data, i18n: i18n, isLandscape: true),
-                  ),
-                ],
-              ),
-              orElse: () => const SizedBox(width: 234, height: 80),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLandscapeControlConsole(
-      BuildContext context,
-      WidgetRef ref,
-      RecordingState state,
-      bool isRecording,
-      bool isCalibrating,
-      dynamic i18n) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final onSurface = colorScheme.onSurface;
-
-    return Container(
-      width: 300,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: colorScheme.surface.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(32),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withValues(alpha: 0.25),
-              blurRadius: 30,
-              offset: const Offset(0, 12))
-        ],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.max, // 改为 max 以填充高度
-        children: [
-          // 顶部工具栏
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => const SettingsScreen())),
-                icon: Icon(Icons.settings_outlined, size: 20, color: onSurface),
-              ),
-              Text(
-                'PUKED',
-                style: TextStyle(
-                    fontSize: 12, // 缩小字体
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w900,
-                    color: onSurface.withValues(alpha: 0.8)),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => const HistoryScreen())),
-                icon: Icon(Icons.history_outlined, size: 20, color: onSurface),
+              _buildCircleBtn(Icons.settings_outlined, () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()))),
+              const SizedBox(width: 12),
+              _buildCircleBtn(Icons.history_outlined, () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()))),
+              const SizedBox(width: 12),
+              _buildCircleBtn(
+                _isStatsExpanded ? Icons.dashboard : Icons.dashboard_outlined,
+                () => setState(() => _isStatsExpanded = !_isStatsExpanded),
+                color: _isStatsExpanded ? Theme.of(context).colorScheme.primary : Colors.white,
+                iconColor: _isStatsExpanded ? Colors.white : Colors.black87,
               ),
             ],
           ),
-
-          const Divider(height: 16), // 从 24 降回 16，为按钮腾出空间
-
-          if (isRecording) ...[
-            // 统计数据
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-              decoration: BoxDecoration(
-                color:
-                    colorScheme.surfaceContainerHighest.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('distance'),
-                        value:
-                            "${(state.currentDistance / 1000).toStringAsFixed(2)} km",
-                        icon: Icons.straighten,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 16),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('peak_g'),
-                        value: "${state.maxGForce.toStringAsFixed(2)}G",
-                        icon: Icons.shutter_speed,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 16),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('neg_exp'),
-                        value: "${state.events.length}",
-                        icon: Icons.error_outline,
-                        compact: true),
-                  ),
-                ],
-              ),
+          
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(16),
             ),
-            const SizedBox(height: 12),
-
-            // 按钮区域
-            GridView.count(
-              padding: EdgeInsets.zero,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 2.6, // 从 2.2 调回 2.6，在高度和空间之间取得平衡
+            child: Row(
               children: [
-                _TagButton(
-                  label: i18n.t('rapid_accel'),
-                  icon: Icons.speed,
-                  color: const Color(0xFFFF9500),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidAcceleration),
-                  compact: true,
+                Icon(Icons.satellite_alt, 
+                  size: 12, 
+                  color: state.gpsAccuracy < 5 ? Colors.greenAccent : (state.gpsAccuracy < 15 ? Colors.orange : Colors.red)
                 ),
-                _TagButton(
-                  label: i18n.t('rapid_decel'),
-                  icon: Icons.trending_down,
-                  color: const Color(0xFFFF3B30),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidDeceleration),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('bump'),
-                  icon: Icons.vibration,
-                  color: const Color(0xFF5856D6),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.bump),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('wobble'),
-                  icon: Icons.waves,
-                  color: const Color(0xFF007AFF),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.wobble),
-                  compact: true,
+                const SizedBox(width: 6),
+                Text(
+                  "GPS ±${state.gpsAccuracy.toStringAsFixed(0)}m",
+                  style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold, fontFamily: 'monospace'),
                 ),
               ],
             ),
-          ] else
-            Expanded(
-              child: Center(
-                child: Icon(Icons.rocket_launch_outlined,
-                    size: 40, color: onSurface.withValues(alpha: 0.2)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🟢🟢🟢 全能型仪表盘 (Super HUD) 🟢🟢🟢
+  Widget _buildProDashboard(BuildContext context, dynamic i18n, RecordingState state) {
+    final speedKmh = (state.currentPosition?.speed ?? 0.0) * 3.6;
+    final heading = state.currentPosition?.heading ?? 0.0;
+    final altitude = state.currentPosition?.altitude ?? 0.0;
+    final lat = state.currentPosition?.latitude ?? 0.0;
+    final lng = state.currentPosition?.longitude ?? 0.0;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+        child: Container(
+          // 增加高度以容纳更多信息
+          height: 180, 
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.6)),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 20, offset: const Offset(0, 8))
+            ],
+          ),
+          child: Row(
+            children: [
+              // 1. 左侧：G 力球
+              SizedBox(
+                width: 100,
+                child: Consumer(
+                  builder: (context, ref, _) {
+                    final sensorDataAsync = ref.watch(sensorStreamProvider);
+                    return sensorDataAsync.maybeWhen(
+                      data: (data) => Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Transform.rotate(
+                            angle: -heading * (math.pi / 180),
+                            child: Container(
+                              width: 90, height: 90,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.grey.withValues(alpha: 0.2), width: 2),
+                                gradient: SweepGradient(
+                                  colors: [Colors.grey.withValues(alpha: 0.1), Colors.redAccent.withValues(alpha: 0.5), Colors.grey.withValues(alpha: 0.1)],
+                                  stops: const [0.0, 0.5, 1.0],
+                                  transform: const GradientRotation(-math.pi / 2),
+                                ),
+                              ),
+                              child: Align(
+                                alignment: Alignment.topCenter,
+                                child: Container(width: 2, height: 5, color: Colors.redAccent),
+                              ),
+                            ),
+                          ),
+                          GForceBall(
+                            acceleration: data.processedAccel,
+                            gyroscope: data.gyroscope,
+                            size: 64,
+                          ),
+                        ],
+                      ),
+                      orElse: () => const SizedBox(),
+                    );
+                  },
+                ),
+              ),
+              
+              const SizedBox(width: 12),
+              
+              // 2. 中间：数据列 (速度/海拔/经纬度)
+              Expanded(
+                flex: 3,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 速度 (SPEED)
+                    _buildDigitalStat(i18n.t('speed_label'), speedKmh.toStringAsFixed(0), "km/h", fontSize: 28),
+                    const SizedBox(height: 8),
+                    // G 值
+                    Consumer(
+                      builder: (context, ref, _) {
+                        final sensorData = ref.watch(sensorStreamProvider).valueOrNull;
+                        double gX = 0.0, gY = 0.0, gZ = 0.0;
+                        if (sensorData != null) {
+                          gX = sensorData.processedAccel.x / 9.80665;
+                          gY = sensorData.processedAccel.y / 9.80665;
+                          gZ = (sensorData.processedAccel.z / 9.80665) - 1.0;
+                        }
+                        return Column(
+                          children: [
+                            _buildCompactGRow(i18n.t('g_long'), gY, const Color(0xFFE57373)),
+                            const SizedBox(height: 4),
+                            _buildCompactGRow(i18n.t('g_lat'), gX, const Color(0xFF64B5F6)),
+                            const SizedBox(height: 4),
+                            _buildCompactGRow(i18n.t('g_vert'), gZ, const Color(0xFF81C784)),
+                          ],
+                        );
+                      }
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(width: 12),
+
+              // 3. 右侧：波形 + 地理信息
+              Expanded(
+                flex: 3,
+                child: Consumer(
+                  builder: (context, ref, _) {
+                     final sensorData = ref.watch(sensorStreamProvider).valueOrNull;
+                     if (sensorData == null) return const SizedBox();
+                     
+                     return Column(
+                       children: [
+                         // 波形图
+                         Expanded(child: _ProTelemetryChart(data: sensorData, i18n: i18n)),
+                         const SizedBox(height: 8),
+                         // 底部地理信息
+                         Row(
+                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                           children: [
+                             _buildDigitalStat(i18n.t('altitude_label'), altitude.toStringAsFixed(0), "m", fontSize: 14),
+                             const SizedBox(width: 12),
+                             _buildDigitalStat(i18n.t('heading_label'), "${heading.toStringAsFixed(0)}°", "", fontSize: 14),
+                           ],
+                         ),
+                         const SizedBox(height: 2),
+                         Row(
+                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                           children: [
+                             _buildMiniCoord(i18n.t('latitude_short'), lat),
+                             _buildMiniCoord(i18n.t('longitude_short'), lng),
+                           ],
+                         ),
+                       ],
+                     );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 🟢 辅助方法: 迷你坐标显示
+  Widget _buildMiniCoord(String label, double value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text("$label ", style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.grey)),
+        Text(
+          value.toStringAsFixed(4), // 4位小数精度
+          style: const TextStyle(fontSize: 9, fontFamily: 'monospace', fontWeight: FontWeight.w600, color: Colors.black87),
+        ),
+      ],
+    );
+  }
+
+  // 🟢 辅助方法: 紧凑型 G 值进度条
+  Widget _buildCompactGRow(String label, double value, Color color) {
+    final displayValue = value.abs() < 0.02 ? 0.0 : value;
+    final progress = (displayValue.abs() / 1.0).clamp(0.0, 1.0);
+    
+    return Row(
+      children: [
+        SizedBox(
+          width: 32,
+          child: Text(label, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, color: color, letterSpacing: 0.5)),
+        ),
+        Expanded(
+          child: Stack(
+            children: [
+              Container(height: 4, decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(2))),
+              FractionallySizedBox(
+                widthFactor: progress,
+                child: Container(height: 4, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(2))),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 40,
+          child: Text(
+            "${displayValue >= 0 ? '+' : ''}${displayValue.abs().toStringAsFixed(2)}",
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, fontFamily: 'monospace', color: Colors.black87),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDigitalStat(String label, String value, String unit, {double fontSize = 20}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(value, style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w900, fontFamily: 'monospace', color: Colors.black87)),
+            if (unit.isNotEmpty) ...[
+              const SizedBox(width: 2),
+              Text(unit, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.grey)),
+            ]
+          ],
+        ),
+        Text(label, style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.grey, letterSpacing: 1)),
+      ],
+    );
+  }
+
+  Widget _buildBottomControls(BuildContext context, WidgetRef ref,
+      RecordingState state, dynamic i18n) {
+    final isRecording = state.isRecording;
+    final currentSpeedKmh = (state.currentPosition?.speed ?? 0.0) * 3.6;
+    
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.transparent, Colors.black.withValues(alpha: 0.6)],
+          stops: const [0.0, 0.7],
+        )
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isRecording) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(30),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(30),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // 1. 里程
+                      _SimpleStat(icon: Icons.straighten, value: "${(state.currentDistance / 1000).toStringAsFixed(2)} km"),
+                      
+                      Container(width: 1, height: 12, color: Colors.white24),
+                      
+                      // 🟢 2. 峰值 G (Max G)
+                      _SimpleStat(icon: Icons.flag, value: "MAX ${state.maxGForce.toStringAsFixed(2)}G"),
+                      
+                      Container(width: 1, height: 12, color: Colors.white24),
+
+                      // 🟢 3. 实时 G (Real-time G)
+                      Consumer(
+                        builder: (context, ref, _) {
+                          final sensorAsync = ref.watch(sensorStreamProvider);
+                          return sensorAsync.maybeWhen(
+                            data: (data) {
+                              final gx = data.processedAccel.x / 9.80665;
+                              final gy = data.processedAccel.y / 9.80665;
+                              final totalG = math.sqrt(gx * gx + gy * gy);
+                              
+                              Color valueColor = Colors.white;
+                              if (totalG > 0.5) valueColor = const Color(0xFFFF9500);
+                              if (totalG > 0.8) valueColor = const Color(0xFFFF3B30);
+
+                              return Row(
+                                children: [
+                                  Icon(Icons.shutter_speed, color: valueColor, size: 14),
+                                  const SizedBox(width: 6),
+                                  Text("${totalG.toStringAsFixed(2)}G", 
+                                    style: TextStyle(color: valueColor, fontWeight: FontWeight.w900, fontSize: 13, fontFamily: 'monospace')),
+                                ],
+                              );
+                            },
+                            orElse: () => _SimpleStat(icon: Icons.shutter_speed, value: "0.00 G"),
+                          );
+                        }
+                      ),
+                      
+                      Container(width: 1, height: 12, color: Colors.white24),
+                      
+                      // 4. 事件数
+                      _SimpleStat(icon: Icons.error_outline, value: "${state.events.length}"),
+                    ],
+                  ),
+                ),
               ),
             ),
+            const SizedBox(height: 16),
 
-          const Spacer(), // 无论是否录制，都使用 Spacer 将主按钮推至底部，确保位置绝对一致
-          _buildMainActionButton(
-              context, ref, state, isRecording, isCalibrating, i18n,
-              isLandscape: true),
+            SizedBox(
+              height: 40, 
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                children: [
+                  SizedBox(width: MediaQuery.of(context).size.width * 0.5 - 170),
+                  _MinimalTagButton(
+                    label: i18n.t('rapid_accel'),
+                    color: const Color(0xFFFF9500),
+                    onPressed: () => ref.read(recordingProvider.notifier).tagEvent(EventType.rapidAcceleration),
+                  ),
+                  const SizedBox(width: 8),
+                  _MinimalTagButton(
+                    label: i18n.t('rapid_decel'),
+                    color: const Color(0xFFFF3B30),
+                    onPressed: () => ref.read(recordingProvider.notifier).tagEvent(EventType.rapidDeceleration),
+                  ),
+                  const SizedBox(width: 8),
+                  _MinimalTagButton(
+                    label: i18n.t('bump'),
+                    color: const Color(0xFF5856D6),
+                    onPressed: () => ref.read(recordingProvider.notifier).tagEvent(EventType.bump),
+                  ),
+                  const SizedBox(width: 8),
+                  _MinimalTagButton(
+                    label: i18n.t('wobble'),
+                    color: const Color(0xFF007AFF),
+                    onPressed: () => ref.read(recordingProvider.notifier).tagEvent(EventType.wobble),
+                  ),
+                  const SizedBox(width: 16),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          _buildMainActionButton(context, ref, state, i18n),
         ],
       ),
     );
   }
 
   Widget _buildMainActionButton(BuildContext context, WidgetRef ref,
-      RecordingState state, bool isRecording, bool isCalibrating, dynamic i18n,
-      {bool isLandscape = false}) {
+      RecordingState state, dynamic i18n) {
+    final isRecording = state.isRecording;
     return SizedBox(
       width: double.infinity,
+      height: 56,
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
-          backgroundColor: isRecording
-              ? const Color(0xFFFF3B30)
-              : Theme.of(context).colorScheme.primary,
+          backgroundColor: isRecording ? const Color(0xFFFF3B30) : Theme.of(context).colorScheme.primary,
           foregroundColor: Colors.white,
-          padding: EdgeInsets.symmetric(vertical: isLandscape ? 14 : 18),
-          elevation: 0,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          elevation: 8,
+          shadowColor: (isRecording ? Colors.red : Theme.of(context).colorScheme.primary).withValues(alpha: 0.4),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
         ),
-        onPressed: isCalibrating
-            ? null
-            : () async {
-                if (isRecording) {
-                  final tripId = state.currentTrip?.id;
-                  await ref.read(recordingProvider.notifier).stopRecording();
-                  if (tripId != null && context.mounted) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => VehicleInfoScreen(tripId: tripId),
-                      ),
-                    );
-                  }
-                } else {
-                  ref.read(recordingProvider.notifier).startRecording();
-                }
-              },
-        child: Text(
-          isRecording ? i18n.t('stop_trip') : i18n.t('start_trip'),
-          style: TextStyle(
-              fontSize: isLandscape ? 16 : 18, fontWeight: FontWeight.bold),
-        ),
+        onPressed: state.isCalibrating ? null : () async {
+          if (isRecording) {
+            final tripId = state.currentTrip?.id;
+            await ref.read(recordingProvider.notifier).stopRecording();
+            if (tripId != null && context.mounted) {
+              Navigator.push(context, MaterialPageRoute(builder: (context) => VehicleInfoScreen(tripId: tripId)));
+            }
+          } else {
+            ref.read(recordingProvider.notifier).startRecording();
+          }
+        },
+        child: state.isCalibrating 
+          ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3))
+          : Text(
+              isRecording ? i18n.t('stop_trip').toUpperCase() : i18n.t('start_trip').toUpperCase(),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+            ),
       ),
     );
   }
 
-  Widget _buildHeader(BuildContext context, dynamic i18n) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 10, 0, 4), // 减小左侧边距，因为外层已有 Padding
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              i18n.t('app_name').toUpperCase(),
-              style: Theme.of(context).appBarTheme.titleTextStyle,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMapSection(RecordingState state,
-      {bool isLandscape = false, bool noMargin = false}) {
-    return LayoutBuilder(builder: (context, constraints) {
-      return Stack(
-        children: [
-          Container(
-            margin: (isLandscape || noMargin)
-                ? EdgeInsets.zero
-                : const EdgeInsets.only(
-                    bottom: 12), // 移除左右 16px 边距，由父容器 Padding 统一控制
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardTheme.color,
-              borderRadius:
-                  isLandscape ? BorderRadius.zero : BorderRadius.circular(24),
-              border: null,
-            ),
-            child: ClipRRect(
-              borderRadius:
-                  isLandscape ? BorderRadius.zero : BorderRadius.circular(24),
-              child: TripMapView(
-                trajectory: state.trajectory,
-                events: state.events,
-                currentPosition: state.currentPosition,
-              ),
-            ),
-          ),
-          // 调试面板 (在横屏下更小)
-          Positioned(
-            top: (isLandscape || noMargin) ? 12 : 16,
-            left: (isLandscape || noMargin) ? 12 : 16, // 同步调整
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.4),
-                  borderRadius: BorderRadius.circular(8)),
-              child: Text(
-                "GPS: ${state.debugMessage}",
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
-        ],
-      );
-    });
-  }
-
-  Widget _buildSensorSection(BuildContext context, dynamic i18n,
-      {double height = 140, bool noMargin = false}) {
+  Widget _buildCircleBtn(IconData icon, VoidCallback onTap, {Color? color, Color? iconColor}) {
     return GestureDetector(
-      key: const ValueKey('small_sensor_section'),
-      behavior: HitTestBehavior.opaque,
-      onTap: () {
-        setState(() {
-          _isSensorFocused = true;
-        });
-      },
+      onTap: onTap,
       child: Container(
-        height: height,
-        margin: noMargin ? EdgeInsets.zero : EdgeInsets.zero, // 统一移除内边距
-        padding: const EdgeInsets.all(16),
+        width: 44, height: 44,
         decoration: BoxDecoration(
-          color: Theme.of(context).cardTheme.color,
-          borderRadius: BorderRadius.circular(24),
-          border: null,
-        ),
-        child: Consumer(
-          builder: (context, ref, child) {
-            final sensorDataAsync = ref.watch(sensorStreamProvider);
-            return sensorDataAsync.maybeWhen(
-              data: (data) => Row(
-                children: [
-                  GForceBall(
-                    acceleration: data.processedAccel,
-                    gyroscope: data.gyroscope,
-                    size: height * 0.7, // 动态调整球体大小
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(
-                    child: _SensorWaveformSection(
-                      data: data,
-                      i18n: i18n,
-                      showAxes: false,
-                    ),
-                  ),
-                ],
-              ),
-              orElse: () => const Center(child: CircularProgressIndicator()),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildControlSection(BuildContext context, WidgetRef ref,
-      RecordingState state, bool isRecording, bool isCalibrating, dynamic i18n,
-      {bool noPadding = false}) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: noPadding ? 0 : 20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (isRecording) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
-              decoration: BoxDecoration(
-                color:
-                    colorScheme.surfaceContainerHighest.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(16), // 与主按钮圆角保持一致 (16)
-                border: Border.all(
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('distance'),
-                        value:
-                            "${(state.currentDistance / 1000).toStringAsFixed(2)} km",
-                        icon: Icons.straighten,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 24),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('peak_g'),
-                        value: "${state.maxGForce.toStringAsFixed(2)}G",
-                        icon: Icons.shutter_speed,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 24),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('neg_exp'),
-                        value: "${state.events.length}",
-                        icon: Icons.error_outline,
-                        compact: true),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            // 竖屏下使用更紧凑的 Grid
-            GridView.count(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 2.8,
-              children: [
-                _TagButton(
-                  label: i18n.t('rapid_accel'),
-                  icon: Icons.speed,
-                  color: const Color(0xFFFF9500),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidAcceleration),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('rapid_decel'),
-                  icon: Icons.trending_down,
-                  color: const Color(0xFFFF3B30),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidDeceleration),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('bump'),
-                  icon: Icons.vibration,
-                  color: const Color(0xFF5856D6),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.bump),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('wobble'),
-                  icon: Icons.waves,
-                  color: const Color(0xFF007AFF),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.wobble),
-                  compact: true,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
+          color: color ?? Colors.white,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 8, offset: const Offset(0, 2))
           ],
-          _buildMainActionButton(
-              context, ref, state, isRecording, isCalibrating, i18n),
-        ],
+        ),
+        child: Icon(icon, size: 22, color: iconColor ?? Colors.black87),
       ),
-    );
-  }
-
-  Widget _buildStatDivider(ColorScheme colorScheme, {double height = 24}) {
-    return Container(
-      width: 1,
-      height: height,
-      color: colorScheme.outlineVariant.withValues(alpha: 0.3),
     );
   }
 
@@ -857,18 +674,9 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(
-                color: Theme.of(context).colorScheme.primary),
+            const CircularProgressIndicator(color: Colors.white),
             const SizedBox(height: 24),
-            Text(i18n.t('calibrating'),
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800)),
-            const SizedBox(height: 8),
-            Text(i18n.t('calibration_tip'),
-                style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.6), fontSize: 14)),
+            Text(i18n.t('calibrating'), style: const TextStyle(color: Colors.white, fontSize: 20)),
           ],
         ),
       ),
@@ -876,149 +684,150 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
   }
 }
 
-// 内部私有组件：波形图部分，独立管理历史记录以避免主页面刷新
-class _SensorWaveformSection extends StatefulWidget {
-  final dynamic data;
-  final dynamic i18n;
-  final bool isLandscape;
-  final bool showAxes;
-  const _SensorWaveformSection({
-    required this.data,
-    required this.i18n,
-    this.isLandscape = false,
-    this.showAxes = false,
-  });
-
-  @override
-  State<_SensorWaveformSection> createState() => _SensorWaveformSectionState();
-}
-
-class _SensorWaveformSectionState extends State<_SensorWaveformSection> {
-  final ListQueue<double> _accelXHistory = ListQueue<double>();
-  final ListQueue<double> _accelYHistory = ListQueue<double>();
-
-  @override
-  void didUpdateWidget(_SensorWaveformSection oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (_accelXHistory.length >= 100) _accelXHistory.removeFirst();
-    if (_accelYHistory.length >= 100) _accelYHistory.removeFirst();
-    _accelXHistory.add(widget.data.processedAccel.x / 9.80665); // 转换为 G
-    _accelYHistory.add(widget.data.processedAccel.y / 9.80665); // 转换为 G
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Expanded(
-          child: SensorWaveform(
-            data: _accelYHistory.toList(),
-            color: Theme.of(context).colorScheme.primary,
-            label: widget.isLandscape ? '' : widget.i18n.t('longitudinal'),
-            limit: 1.5, // G力视图通常在 1.5G 范围内
-            showAxes: widget.showAxes,
-          ),
-        ),
-        SizedBox(height: widget.showAxes ? 16 : 8),
-        Expanded(
-          child: SensorWaveform(
-            data: _accelXHistory.toList(),
-            color: Theme.of(context).colorScheme.secondary,
-            label: widget.isLandscape ? '' : widget.i18n.t('lateral'),
-            limit: 1.5,
-            showAxes: widget.showAxes,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _RecordingStat extends StatelessWidget {
+class _MinimalTagButton extends StatelessWidget {
   final String label;
-  final String value;
-  final IconData icon;
-  final bool compact;
-  const _RecordingStat({
-    required this.label,
-    required this.value,
-    required this.icon,
-    this.compact = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Column(
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon,
-                size: compact ? 12 : 14,
-                color: colorScheme.primary), // 移除不必要的透明度，直接使用主色
-            const SizedBox(width: 4),
-            Text(value,
-                style: TextStyle(
-                    fontSize: compact ? 16 : 18,
-                    fontWeight: FontWeight.w900, // 增加字重
-                    color: colorScheme.onSurface)),
-          ],
-        ),
-        Text(label.toUpperCase(), // 统一使用大写并加亮
-            style: TextStyle(
-                fontSize: compact ? 10 : 11,
-                fontWeight: FontWeight.w800,
-                color: colorScheme.onSurfaceVariant)),
-      ],
-    );
-  }
-}
-
-class _TagButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
   final Color color;
   final VoidCallback onPressed;
-  final bool compact;
-  const _TagButton({
-    required this.label,
-    required this.icon,
-    required this.color,
-    required this.onPressed,
-    this.compact = false,
-  });
+
+  const _MinimalTagButton({required this.label, required this.color, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: color.withValues(alpha: 0.1),
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          height: compact ? 44 : 54,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withValues(alpha: 0.2), width: 1),
+    return Container(
+      decoration: BoxDecoration(
+        color: color, 
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.4),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          )
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(20),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            child: Row(
+              children: [
+                Container(width: 6, height: 6, decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle)),
+                const SizedBox(width: 6),
+                Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+              ],
+            ),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: color, size: compact ? 18 : 22),
-              const SizedBox(width: 8),
-              Text(label,
-                  style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.w800,
-                      fontSize: compact ? 13 : 15)),
+        ),
+      ),
+    );
+  }
+}
+
+class _SimpleStat extends StatelessWidget {
+  final IconData icon;
+  final String value;
+  const _SimpleStat({required this.icon, required this.value});
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: Colors.white70, size: 14),
+        const SizedBox(width: 6),
+        Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13, fontFamily: 'monospace')),
+      ],
+    );
+  }
+}
+
+class _ProTelemetryChart extends StatefulWidget {
+  final dynamic data;
+  final dynamic i18n;
+  const _ProTelemetryChart({required this.data, required this.i18n});
+
+  @override
+  State<_ProTelemetryChart> createState() => _ProTelemetryChartState();
+}
+
+class _ProTelemetryChartState extends State<_ProTelemetryChart> {
+  final int _windowSize = 300; 
+  final ListQueue<double> _yAxis = ListQueue(); 
+  final ListQueue<double> _xAxis = ListQueue();
+
+  @override
+  void didUpdateWidget(_ProTelemetryChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_yAxis.length >= _windowSize) _yAxis.removeFirst();
+    if (_xAxis.length >= _windowSize) _xAxis.removeFirst();
+    if (widget.data != null) {
+      _yAxis.add(widget.data.processedAccel.y / 9.80665);
+      _xAxis.add(widget.data.processedAccel.x / 9.80665);
+    } else {
+      _yAxis.add(0.0);
+      _xAxis.add(0.0);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    List<FlSpot> ySpots = [];
+    List<FlSpot> xSpots = [];
+    int index = 0;
+    for (var val in _yAxis) {
+      ySpots.add(FlSpot(index.toDouble(), val));
+      index++;
+    }
+    index = 0;
+    for (var val in _xAxis) {
+      xSpots.add(FlSpot(index.toDouble(), val));
+      index++;
+    }
+
+    return Column(
+      children: [
+        Expanded(child: _buildChartRow(ySpots, const Color(0xFFE57373), widget.i18n.t('longitudinal'))),
+        const SizedBox(height: 8),
+        Expanded(child: _buildChartRow(xSpots, const Color(0xFF64B5F6), widget.i18n.t('lateral'))),
+      ],
+    );
+  }
+
+  Widget _buildChartRow(List<FlSpot> spots, Color color, String label) {
+    return Stack(
+      children: [
+        LineChart(
+          LineChartData(
+            minY: -1.0, maxY: 1.0, 
+            minX: 0, maxX: _windowSize.toDouble(),
+            gridData: FlGridData(show: false), 
+            titlesData: const FlTitlesData(show: false),
+            borderData: FlBorderData(show: false),
+            lineBarsData: [
+              LineChartBarData(
+                spots: spots,
+                isCurved: true,
+                color: color,
+                barWidth: 2,
+                dotData: const FlDotData(show: false),
+                belowBarData: BarAreaData(
+                  show: true,
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [color.withValues(alpha: 0.3), color.withValues(alpha: 0.0)],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
-      ),
+        Positioned(
+          top: 0, right: 0,
+          child: Text(label, style: TextStyle(color: color, fontSize: 8, fontWeight: FontWeight.bold)),
+        ),
+      ],
     );
   }
 }

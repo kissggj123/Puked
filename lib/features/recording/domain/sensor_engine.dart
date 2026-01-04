@@ -1,33 +1,60 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:io';
+import 'dart:math' as Math;
+import 'package:flutter/foundation.dart';
 import 'package:puked/models/sensor_data.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:vector_math/vector_math_64.dart';
 
 class SensorEngine {
-  // 30Hz 采集周期 (33.33ms)
-  static const Duration samplingPeriod = Duration(milliseconds: 33);
+  // 🟢 优化1：采样周期提升至 100Hz (10ms)
+  // iPhone 14 Pro 的 A16 芯片完全能处理这个负载，捕捉路面微小纹理
+  static final Duration samplingPeriod = Platform.isIOS
+      ? const Duration(milliseconds: 10) // 100Hz for iOS
+      : const Duration(milliseconds: 33); // 30Hz for Android
 
-  // 15秒缓冲区长度 (15s * 30Hz = 450 points)
-  static const int bufferLimit = 450;
+  // 🟢 优化2：缓冲区扩容 (15秒 * 100Hz = 1500点)
+  static final int bufferLimit = Platform.isIOS ? 1500 : 450;
 
   final ListQueue<SensorData> _buffer = ListQueue<SensorData>(bufferLimit);
 
-  // 校准矩阵 (Identity matrix by default)
+  // 校准矩阵
   Matrix3 _rotationMatrix = Matrix3.identity();
   bool _isCalibrated = false;
-  double _gravityMagnitude = 9.80665; // 标准重力加速度
+  double _gravityMagnitude = 9.80665;
 
-  // 低通滤波器系数 (0.0 ~ 1.0, 越小越平滑)
-  static const double _lpfCoeff = 0.1;
-  static const double _rampFilterCoeff = 0.02; // 更慢的滤波用于估计重力偏移 (斜坡优化)
+  // 🟢 优化3：滤波系数微调
+  // 频率 100Hz 时，单次步长变小，系数需要减小以保持平滑手感
+  // 0.05 -> 0.03
+  static const double _lpfCoeff = 0.03; 
+  static const double _rampFilterCoeff = 0.01;
   Vector3 _filteredAccel = Vector3.zero();
-  Vector3 _gravityEstimate = Vector3.zero(); // 实时估计重力方向 (用于坡道补偿)
+  Vector3 _gravityEstimate = Vector3.zero();
 
-  // 临时存储最新的传感器原始值
+  // --- 顶级滤波矩阵 ---
+  // 中值滤波窗口，100Hz下建议稍微增大窗口，消除偶发毛刺
+  final ListQueue<Vector3> _medianBuffer = ListQueue<Vector3>();
+  static const int _medianWindowSize = 5; // 原来是3，改成5更稳
+
+  // 卡尔曼滤波器状态 (Gravity Tracking)
+  Vector3 _kalmanGravity = Vector3.zero();
+  Vector3 _kalmanP = Vector3.all(0.1); 
+  // 100Hz下过程噪声要更小，因为10ms内重力不可能剧变
+  static const double _kalmanQ = 0.0005; 
+  static const double _kalmanR = 0.1; 
+
+  // 动态航向修正
+  double _dynamicYawOffset = 0.0;
+  final ListQueue<Vector3> _headingLearningBuffer = ListQueue<Vector3>();
+  bool _isHeadingAligned = false;
+
+  // 传感器原始值
   final Vector3 _latestAccel = Vector3.zero();
   final Vector3 _latestGyro = Vector3.zero();
   final Vector3 _latestMag = Vector3.zero();
+  DateTime _lastSensorEventTime = DateTime.now();
+  int _sensorEventCount = 0;
 
   StreamSubscription? _accelSub;
   StreamSubscription? _gyroSub;
@@ -36,7 +63,6 @@ class SensorEngine {
   bool _isRunning = false;
   bool get isRunning => _isRunning;
 
-  // 广播流，供 UI 订阅
   final _dataController = StreamController<SensorData>.broadcast();
   Stream<SensorData> get sensorStream => _dataController.stream;
 
@@ -44,92 +70,167 @@ class SensorEngine {
     if (_isRunning) return;
     _isRunning = true;
 
-    // 监听原始传感器流
-    _accelSub = accelerometerEventStream()
-        .listen((e) => _latestAccel.setValues(e.x, e.y, e.z));
-    _gyroSub = gyroscopeEventStream()
+    // 🟢 优化4：请求 gameInterval (约20ms)，虽然 UI 跑100Hz，但硬件推送太快可能阻塞 Isolate
+    // 14 Pro 的 gameInterval 实际上非常快 (~60Hz)，我们通过 timer 插值到 100Hz
+    final sensorInterval = SensorInterval.gameInterval;
+
+    _accelSub =
+        accelerometerEventStream(samplingPeriod: sensorInterval).listen((e) {
+      _latestAccel.setValues(e.x, e.y, e.z);
+      _lastSensorEventTime = DateTime.now();
+      _sensorEventCount++;
+      // iOS 依然采用事件驱动，保证最低延迟
+      if (Platform.isIOS) _processTick();
+    });
+
+    _gyroSub = gyroscopeEventStream(samplingPeriod: sensorInterval)
         .listen((e) => _latestGyro.setValues(e.x, e.y, e.z));
-    _magSub = magnetometerEventStream()
+    _magSub = magnetometerEventStream(samplingPeriod: sensorInterval)
         .listen((e) => _latestMag.setValues(e.x, e.y, e.z));
 
-    // 启动 30Hz 定时采样
-    _samplingTimer = Timer.periodic(samplingPeriod, (timer) {
-      _processTick();
-    });
+    if (!Platform.isIOS) {
+      _samplingTimer = Timer.periodic(samplingPeriod, (timer) {
+        _processTick();
+      });
+    }
   }
 
   void _processTick() {
     final now = DateTime.now();
 
-    // 1. 应用旋转矩阵对齐设备坐标到车辆坐标
-    final rotatedAccel = _rotationMatrix.transformed(_latestAccel);
-    final rotatedGyro = _rotationMatrix.transformed(_latestGyro);
+    // 1. 中值滤波 (去噪)
+    _medianBuffer.addLast(_latestAccel.clone());
+    if (_medianBuffer.length > _medianWindowSize) _medianBuffer.removeFirst();
+    final Vector3 smoothedAccel = _calculateMedian(_medianBuffer.toList());
 
-    // 2. 实时估计重力分量 (坡道/斜坡优化)
-    // 在平稳行驶时，长期加速度的平均值方向就是重力方向
-    // 如果在坡道上，重力会在 X/Y 轴产生分量，我们通过极慢的滤波来捕捉这个变化并抵消它
-    if (_isCalibrated) {
-      _gravityEstimate = _gravityEstimate * (1.0 - _rampFilterCoeff) +
-          rotatedAccel * _rampFilterCoeff;
+    // 2. 卡尔曼滤波 (重力分离)
+    if (!_isCalibrated) {
+      _kalmanGravity = smoothedAccel.clone();
+      _isCalibrated = true; 
     } else {
-      _gravityEstimate = rotatedAccel.clone();
+      for (int i = 0; i < 3; i++) {
+        _kalmanP[i] = _kalmanP[i] + _kalmanQ;
+        double kGain = _kalmanP[i] / (_kalmanP[i] + _kalmanR);
+        _kalmanGravity[i] =
+            _kalmanGravity[i] + kGain * (smoothedAccel[i] - _kalmanGravity[i]);
+        _kalmanP[i] = (1 - kGain) * _kalmanP[i];
+      }
     }
 
-    // 3. 低通滤波处理 (用于平滑显示和 Peak G)
+    // 3. 旋转对齐
+    Vector3 rotatedAccel = _rotationMatrix.transformed(smoothedAccel);
+    Vector3 rotatedGyro = _rotationMatrix.transformed(_latestGyro);
+
+    if (_dynamicYawOffset != 0) {
+      final yawMatrix = Matrix3.rotationZ(_dynamicYawOffset);
+      rotatedAccel = yawMatrix.transformed(rotatedAccel);
+      rotatedGyro = yawMatrix.transformed(rotatedGyro);
+    }
+
+    // 4. 扣除动态重力
+    final Vector3 currentGravityInRef =
+        _rotationMatrix.transformed(_kalmanGravity);
+    
+    // 纯净线性加速度
+    final processedAccel = rotatedAccel - currentGravityInRef;
+
+    // 5. 低通滤波 (用于 UI 平滑显示)
     _filteredAccel =
-        _filteredAccel * (1.0 - _lpfCoeff) + rotatedAccel * _lpfCoeff;
-
-    // 4. 扣除实时估计的重力 (坡道补偿后的净加速度)
-    // 这样在坡道平稳行驶时，processedAccel 会趋向于 0
-    final processedAccel = rotatedAccel - _gravityEstimate;
-
-    // 5. 经过低通滤波平滑后的净加速度 (用于稳定显示和 Peak G)
-    final processedFilteredAccel = _filteredAccel - _gravityEstimate;
+        _filteredAccel * (1.0 - _lpfCoeff) + processedAccel * _lpfCoeff;
 
     final data = SensorData(
       timestamp: now,
       accelerometer: _latestAccel.clone(),
       gyroscope: _latestGyro.clone(),
       magnetometer: _latestMag.clone(),
-      processedAccel: processedAccel,
+      processedAccel: processedAccel, // 用于算法检测 (如急刹)
       processedGyro: rotatedGyro,
-      filteredAccel: processedFilteredAccel,
+      filteredAccel: _filteredAccel,  // 用于 UI 显示 (G力球)
     );
 
-    // 更新缓冲区
+    // 航向学习 (需要积累更多点，100Hz下 300点 = 3秒)
+    if (!_isHeadingAligned && _buffer.length > 300) {
+      _learnHeading(processedAccel);
+    }
+
     if (_buffer.length >= bufferLimit) {
       _buffer.removeFirst();
     }
     _buffer.addLast(data);
 
-    // 推送到 UI 层
     _dataController.add(data);
   }
 
-  /// 鲁棒性校准逻辑：将当前重力方向映射为 Z 轴，并扣除重力
-  Future<void> calibrate() async {
-    // 1. 采样一段时间获取稳定的重力向量
-    Vector3 gravitySum = Vector3.zero();
-    const int samples = 10; // 减少采样次数到 10 次，缩短阻塞时间
+  Vector3 _calculateMedian(List<Vector3> samples) {
+    if (samples.isEmpty) return Vector3.zero();
+    if (samples.length == 1) return samples[0];
 
-    for (int i = 0; i < samples; i++) {
-      gravitySum += _latestAccel;
-      await Future.delayed(
-          const Duration(milliseconds: 100)); // 增加单次间隔，保持总时长 1s 左右但减少循环频率
+    final xValues = samples.map((s) => s.x).toList()..sort();
+    final yValues = samples.map((s) => s.y).toList()..sort();
+    final zValues = samples.map((s) => s.z).toList()..sort();
+
+    final mid = samples.length ~/ 2;
+    return Vector3(xValues[mid], yValues[mid], zValues[mid]);
+  }
+
+  void _learnHeading(Vector3 accel) {
+    final double horizontalMag =
+        Math.sqrt(accel.x * accel.x + accel.y * accel.y);
+    
+    // 只有明显的纵向加速 (> 1.2 m/s²) 才触发学习，防止误判
+    if (horizontalMag > 1.2 && accel.y > 0) {
+      _headingLearningBuffer.addLast(accel.clone());
+      // 100Hz 下采集 50 个点 (0.5秒)
+      if (_headingLearningBuffer.length > 50) {
+        double avgAngle = 0;
+        for (var a in _headingLearningBuffer) {
+          avgAngle += Math.atan2(a.x, a.y);
+        }
+        avgAngle /= _headingLearningBuffer.length;
+
+        if (avgAngle.abs() > 0.05) {
+          _dynamicYawOffset -= avgAngle; 
+          debugPrint(
+              "Heading Aligned: Adjusted by ${(avgAngle * 180 / Math.pi).toStringAsFixed(1)}°");
+        }
+        _isHeadingAligned = true;
+        _headingLearningBuffer.clear();
+      }
+    }
+  }
+
+  Future<void> calibrate() async {
+    List<Vector3> samples = [];
+    const int sampleCount = 40; // 100Hz 很快，多采一点样本 (40 * 20ms = 0.8s)
+
+    for (int i = 0; i < sampleCount; i++) {
+      samples.add(_latestAccel.clone());
+      await Future.delayed(const Duration(milliseconds: 20));
     }
 
-    final gMean = gravitySum / samples.toDouble();
+    Vector3 gMean = Vector3.zero();
+    for (var s in samples) {
+      gMean += s;
+    }
+    gMean /= samples.length.toDouble();
+
+    double variance = 0;
+    for (var s in samples) {
+      variance += (s - gMean).length2;
+    }
+    variance /= samples.length;
+
+    if (variance > 0.05) {
+      throw Exception("校准失败：请确保手机完全静止（检测到波动: ${variance.toStringAsFixed(3)}）");
+    }
+
     _gravityMagnitude = gMean.length;
+    if (_gravityMagnitude < 8.0 || _gravityMagnitude > 12.0) {
+      throw Exception(
+          "校准失败：传感器读数异常 (G: ${_gravityMagnitude.toStringAsFixed(2)})，请检查权限或重启 App");
+    }
 
-    if (_gravityMagnitude < 0.1) return; // 异常情况
-
-    // 2. 构建旋转矩阵
-    // 我们需要将 gMean 向量旋转到 (0, 0, _gravityMagnitude)
-    // 目标 Z 轴就是重力方向
     final unitZ = gMean.normalized();
-
-    // 选择一个不与 unitZ 平行的参考向量来构建 X 轴
-    // 如果 unitZ 接近 (0, 1, 0)，说明手机是垂直放置的
     Vector3 reference = Vector3(0, 1, 0);
     if (unitZ.dot(reference).abs() > 0.9) {
       reference = Vector3(1, 0, 0);
@@ -138,22 +239,30 @@ class SensorEngine {
     final unitX = reference.cross(unitZ).normalized();
     final unitY = unitZ.cross(unitX).normalized();
 
-    // 旋转矩阵将设备坐标系转换到世界/车辆坐标系
     final rot = Matrix3.columns(unitX, unitY, unitZ);
-    // 这里我们需要逆矩阵来执行从设备到车辆的转换
     _rotationMatrix = rot.isIdentity() ? rot : Matrix3.copy(rot)
       ..invert();
-    _gravityEstimate = _rotationMatrix.transformed(gMean); // 初始化重力估计为校准时的均值
+    _gravityEstimate = _rotationMatrix.transformed(gMean);
     _isCalibrated = true;
+    _isHeadingAligned = false; 
+    _dynamicYawOffset = 0.0; 
 
-    // 强制触发一次数据清理，确保 UI 立即归零
     _processTick();
   }
 
-  /// 获取回溯数据片段 (过去 N 秒)
-  List<SensorData> getLookbackBuffer(int seconds) {
-    int pointsToTake = (seconds * 30).clamp(0, _buffer.length);
-    return _buffer.toList().sublist(_buffer.length - pointsToTake);
+  List<SensorData> getLookbackBuffer(int seconds, {int targetHz = 20}) {
+    // 🟢 修正：源频率是 100Hz
+    final sourceHz = Platform.isIOS ? 100 : 30;
+    final step = (sourceHz / targetHz).round().clamp(1, 10);
+
+    int pointsToTake = (seconds * sourceHz).clamp(0, _buffer.length);
+    final rawList = _buffer.toList().sublist(_buffer.length - pointsToTake);
+
+    List<SensorData> downsampled = [];
+    for (int i = 0; i < rawList.length; i += step) {
+      downsampled.add(rawList[i]);
+    }
+    return downsampled;
   }
 
   void dispose() {

@@ -9,8 +9,12 @@ import 'package:puked/features/settings/providers/settings_provider.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:latlong2/latlong.dart'; // 需要计算距离
 import 'dart:async';
 import 'dart:collection';
+
+// 🟢 引入 GPS 惯性算法
+import 'package:puked/common/utils/gps_kalman_filter.dart';
 
 // 传感器引擎 Provider
 final sensorEngineProvider = Provider<SensorEngine>((ref) {
@@ -31,15 +35,17 @@ class RecordingState {
   final bool isCalibrating;
   final Trip? currentTrip;
   final List<RecordedEvent> events;
-  final List<TrajectoryPoint> trajectory; // 增加内存中的轨迹缓存，加速 UI 渲染
-  final double currentDistance; // 当前行程里程 (米)
-  final double maxGForce; // 本次行程的最大 G 值
-  final Position? currentPosition; // 实时位置
-  final DateTime? lastLocationTime; // 上一次位置更新时间
-  final int locationUpdateCount; // 位置更新计数
-  final String debugMessage; // 调试信息
-  final LocationPermission? permissionStatus; // 权限状态
-  final bool isLowConfidenceGPS; // 是否处于弱信号/地库模式
+  final List<TrajectoryPoint> trajectory;
+  final double currentDistance;
+  final double maxGForce;
+  final Position? currentPosition;
+  final DateTime? lastLocationTime;
+  final int locationUpdateCount;
+  final String debugMessage;
+  final LocationPermission? permissionStatus;
+  final bool isLowConfidenceGPS;
+  // 新增：GPS 实时精度数值 (用于 UI 遥测)
+  final double gpsAccuracy; 
 
   RecordingState({
     required this.isRecording,
@@ -55,6 +61,7 @@ class RecordingState {
     this.debugMessage = '',
     this.permissionStatus,
     this.isLowConfidenceGPS = false,
+    this.gpsAccuracy = 0.0,
   });
 
   RecordingState copyWith({
@@ -71,6 +78,7 @@ class RecordingState {
     String? debugMessage,
     LocationPermission? permissionStatus,
     bool? isLowConfidenceGPS,
+    double? gpsAccuracy,
   }) {
     return RecordingState(
       isRecording: isRecording ?? this.isRecording,
@@ -86,6 +94,7 @@ class RecordingState {
       debugMessage: debugMessage ?? this.debugMessage,
       permissionStatus: permissionStatus ?? this.permissionStatus,
       isLowConfidenceGPS: isLowConfidenceGPS ?? this.isLowConfidenceGPS,
+      gpsAccuracy: gpsAccuracy ?? this.gpsAccuracy,
     );
   }
 }
@@ -97,41 +106,36 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
   StreamSubscription<Position>? _positionSub;
   ProviderSubscription<AsyncValue<SensorData>>? _sensorSub;
 
-  // 事件检测阈值 (m/s²)
-  static const double _thresholdAccel = 3.14; // 急加速 (约 0.32G)
-  static const double _thresholdDecel = -3.14; // 急刹车 (约 0.32G)
-  static const double _thresholdWobbleSpan = 1.8; // 摆动跨度阈值
-  static const double _thresholdBump = 2.5; // 颠簸 (Z轴突变)
-  static const double _thresholdJerk =
-      6.0; // 顿挫阈值 (m/s³) - 加速度变化率 (调低基准以补偿速度系数增加)
+  // 🟢 1. 实例化惯性滤波器 (针对 iPhone 14 Pro 优化)
+  final _navFilter = GpsInertialFilter();
 
-  // 保护期和检测窗口
+  // 事件检测阈值 (m/s²)
+  static const double _thresholdAccel = 3.14; 
+  static const double _thresholdDecel = -3.14;
+  static const double _thresholdWobbleSpan = 1.8;
+  static const double _thresholdBump = 2.5; 
+  static const double _thresholdJerk = 6.0;
+
   static const Duration _startProtectionDuration = Duration(seconds: 5);
   static const Duration _wobbleWindow = Duration(milliseconds: 1000);
-  static const Duration _jerkWindow = Duration(milliseconds: 300); // Jerk 计算窗口
+  static const Duration _jerkWindow = Duration(milliseconds: 300);
   DateTime? _recordingStartTime;
 
-  // 传感器历史记录
   final ListQueue<MapEntry<DateTime, double>> _xHistory = ListQueue();
-  final ListQueue<MapEntry<DateTime, double>> _yHistory =
-      ListQueue(); // 增加 Y 轴历史用于检测 Jerk
+  final ListQueue<MapEntry<DateTime, double>> _yHistory = ListQueue();
   final ListQueue<MapEntry<DateTime, double>> _yawRateHistory = ListQueue();
-  final ListQueue<double> _realtimeGHistory = ListQueue(); // 增加实时 G 值平滑缓冲区
+  final ListQueue<double> _realtimeGHistory = ListQueue();
 
-  // 防抖计时器 (防止短时间内重复触发同一类型事件)
   final Map<String, DateTime> _lastTriggered = {};
   static const Duration _debounceDuration = Duration(seconds: 2);
 
-  // --- 聚合引擎相关成员 ---
   final List<_PendingEvent> _pendingEvents = [];
   Timer? _fusionTimer;
   static const Duration _fusionWindow = Duration(milliseconds: 3000);
 
   RecordingNotifier(this._engine, this._storage, this._ref)
       : super(RecordingState(isRecording: false)) {
-    // 延迟启动定位初始化，避免 Android 12+ 启动时的前台服务限制
     Future.microtask(() => _initializeLocation());
-    // 确保引擎启动，以便缓冲区开始填充数据
     _engine.start();
   }
 
@@ -150,24 +154,22 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
           permission == LocationPermission.always) {
         state = state.copyWith(debugMessage: 'Getting Initial Position...');
 
-        // 1. 获取初始位置作为“启动触发器”
         final lastKnown = await Geolocator.getLastKnownPosition();
         if (lastKnown != null) {
           state = state.copyWith(
               currentPosition: lastKnown, debugMessage: 'Initial GPS OK');
         }
 
-        // 2. 启动定位流
         _positionSub?.cancel();
 
+        // 针对 iPhone 的高精度配置
         late LocationSettings locationSettings;
         if (defaultTargetPlatform == TargetPlatform.android) {
           locationSettings = AndroidSettings(
             accuracy: LocationAccuracy.high,
-            distanceFilter: 0,
-            intervalDuration: const Duration(seconds: 2), // 调低频率到 2s 规避拦截
-            forceLocationManager:
-                true, // 【关键优化】强制使用系统原生 GPS，绕过 Fused Location 的智能合并/延迟
+            distanceFilter: 0, 
+            intervalDuration: const Duration(seconds: 1), // 1秒一次，配合惯性算法
+            forceLocationManager: true,
             foregroundNotificationConfig: const ForegroundNotificationConfig(
               notificationText: "Puked 正在记录行程中",
               notificationTitle: "实时记录中",
@@ -176,10 +178,11 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
           );
         } else {
           locationSettings = AppleSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 0,
+            accuracy: LocationAccuracy.bestForNavigation, // 🟢 iPhone 开启最强导航模式
+            distanceFilter: 0, // 0米触发，交给我们自己的算法去平滑
             pauseLocationUpdatesAutomatically: false,
             showBackgroundLocationIndicator: true,
+            activityType: ActivityType.automotiveNavigation, // 声明为车载导航模式
           );
         }
 
@@ -194,7 +197,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
           },
         );
 
-        // 异步尝试获取更高精度的起始点
         Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.medium,
           timeLimit: const Duration(seconds: 5),
@@ -208,61 +210,81 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
   }
 
   void _handlePositionUpdate(Position position) {
-    // 调试打印原始精度
-    debugPrint('GPS Raw Update: Acc:${position.accuracy}');
-
-    // 第一性原理：UI 必须更新
-    final prevPosition = state.currentPosition;
     final now = DateTime.now();
+    final timestamp = position.timestamp?.millisecondsSinceEpoch ?? now.millisecondsSinceEpoch;
 
-    // 判断是否在“行程起始宽容期”（前 60 秒）
-    bool isInGracePeriod = false;
-    if (state.isRecording && _recordingStartTime != null) {
-      isInGracePeriod = now.difference(_recordingStartTime!).inSeconds < 60;
-    }
-
-    // 动态精度阈值：宽容期 200m，稳定期 50m
-    final double accuracyThreshold = isInGracePeriod ? 200.0 : 50.0;
-    final bool isReliable = position.accuracy <= accuracyThreshold;
-    final bool isLowConfidence =
-        position.accuracy > 40.0; // 只要精度大于 40m，我们就认为是弱信号/室内场景
-
-    state = state.copyWith(
-      currentPosition: position,
-      lastLocationTime: now,
-      locationUpdateCount: state.locationUpdateCount + 1,
-      isLowConfidenceGPS: isLowConfidence,
-      debugMessage: isReliable
-          ? 'GPS OK (${position.accuracy.toStringAsFixed(0)}m)'
-          : 'Poor Signal (${position.accuracy.toStringAsFixed(0)}m)',
+    // 🟢 2. 核心处理：应用 GPS 惯性算法
+    // 利用 iPhone 14 Pro 的高精度 speed 和 heading 进行 Dead Reckoning
+    final fixedCoords = _navFilter.process(
+      lat: position.latitude,
+      lng: position.longitude,
+      accuracy: position.accuracy,
+      // 保护性处理，部分情况速度可能为负
+      speed: position.speed < 0 ? 0 : position.speed,
+      heading: position.heading < 0 ? 0 : position.heading,
+      timestamp: timestamp,
+      speedAccuracy: position.speedAccuracy, // 利用 iOS 速度精度
     );
 
-    // 第二性原理：记录从严 (只有精度达标才进轨迹)
-    if (state.isRecording && state.currentTrip != null && isReliable) {
-      double addedDistance = 0;
-      if (prevPosition != null) {
-        addedDistance = Geolocator.distanceBetween(prevPosition.latitude,
-            prevPosition.longitude, position.latitude, position.longitude);
-      }
+    // 获取平滑后的坐标 (WGS84)
+    final double smoothLat = fixedCoords[0];
+    final double smoothLng = fixedCoords[1];
 
-      // 距离过滤
-      if (addedDistance < 2.0 &&
-          prevPosition != null &&
-          state.trajectory.isNotEmpty) {
-        return;
+    // 更新 UI 状态，包括精度
+    state = state.copyWith(
+      lastLocationTime: now,
+      locationUpdateCount: state.locationUpdateCount + 1,
+      // 只要精度 > 40m 视为弱信号
+      isLowConfidenceGPS: position.accuracy > 40.0,
+      gpsAccuracy: position.accuracy,
+      debugMessage: 'GPS OK (±${position.accuracy.toStringAsFixed(0)}m)',
+      // 将平滑后的坐标作为 currentPosition 用于地图居中
+      // 注意：为了不破坏 Position 对象的其他字段(如 altitude)，我们 copy 一个新对象
+      currentPosition: Position(
+        latitude: smoothLat,
+        longitude: smoothLng,
+        timestamp: position.timestamp,
+        accuracy: position.accuracy,
+        altitude: position.altitude,
+        altitudeAccuracy: position.altitudeAccuracy,
+        heading: position.heading,
+        headingAccuracy: position.headingAccuracy,
+        speed: position.speed,
+        speedAccuracy: position.speedAccuracy,
+      ),
+    );
+
+    // 3. 记录轨迹逻辑
+    if (state.isRecording && state.currentTrip != null) {
+      // 精度门槛：虽然有平滑算法，但太离谱的点（>200m误差）还是不要了
+      if (position.accuracy > 200) return;
+
+      // 距离增量计算 (使用平滑后的坐标)
+      double distanceDelta = 0.0;
+      if (state.trajectory.isNotEmpty) {
+        final last = state.trajectory.last;
+        distanceDelta = const Distance().as(
+          LengthUnit.Meter,
+          LatLng(last.lat, last.lng),
+          LatLng(smoothLat, smoothLng),
+        );
+        // 过滤静止时的微小漂移 (< 0.5米不计入里程，防止等红灯时里程增加)
+        if (distanceDelta < 0.5) distanceDelta = 0;
       }
 
       final point = TrajectoryPoint()
-        ..lat = position.latitude
-        ..lng = position.longitude
+        ..lat = smoothLat
+        ..lng = smoothLng
         ..altitude = position.altitude
         ..speed = position.speed
         ..timestamp = now
-        ..isLowConfidence = isLowConfidence;
+        ..isLowConfidence = state.isLowConfidenceGPS;
 
-      final newDistance = state.currentDistance + addedDistance;
+      final newDistance = state.currentDistance + distanceDelta;
+      
       _storage.addTrajectoryPoint(state.currentTrip!.id, point,
           distance: newDistance);
+      
       state = state.copyWith(
         trajectory: [...state.trajectory, point],
         currentDistance: newDistance,
@@ -271,6 +293,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
   }
 
   void _detectAutoEvents(SensorData data) {
+    // ... (传感器检测逻辑，完全保持原样)
     final now = DateTime.now();
     if (state.isCalibrating) return;
     if (_recordingStartTime != null &&
@@ -304,14 +327,12 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
     if (sensitivity == SensitivityLevel.medium) sensitivityMultiplier = 0.8;
     if (sensitivity == SensitivityLevel.high) sensitivityMultiplier = 0.6;
 
-    // --- 动态速度敏感度计算 ---
     double speedMultiplier = 1.0;
     final currentSpeedKmh = (state.currentPosition?.speed ?? 0) * 3.6;
 
     if (currentSpeedKmh < 10.0) {
-      speedMultiplier = 0.8; // 从 0.6 提高到 0.8，减少低速起步误报
+      speedMultiplier = 0.8;
     } else if (currentSpeedKmh < 60.0) {
-      // 10km/h 到 60km/h 线性从 0.8 增长到 1.0
       speedMultiplier = 0.8 + 0.2 * ((currentSpeedKmh - 10.0) / 50.0);
     } else if (currentSpeedKmh > 80.0) {
       speedMultiplier = 1.2;
@@ -325,7 +346,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       return now.difference(last) < _debounceDuration;
     }
 
-    // --- 1. 急加速/急减速检测 (结合动态阈值) ---
     if (accel.y < (_thresholdDecel * finalMultiplier) &&
         !isDebounced('rapidDeceleration')) {
       _lastTriggered['rapidDeceleration'] = now;
@@ -336,9 +356,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       _enqueueEvent(EventType.rapidAcceleration, now);
     }
 
-    // --- 2. Jerk (顿挫/点刹) 检测 ---
     if (!isDebounced('jerk') && _yHistory.length > 5) {
-      // 计算最近 150ms 的加速度变化率
       final recentY =
           _yHistory.where((e) => now.difference(e.key) < _jerkWindow).toList();
       if (recentY.length >= 3) {
@@ -348,8 +366,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
                 1000.0;
         final jerk = deltaA / deltaT;
 
-        // 如果 Jerk 超过阈值 (这里使用绝对值，因为点刹和猛踩都算顿挫)
-        // 修正：将 sensitivityMultiplier 引入 Jerk 检测，使其支持高中低三档设置
         if (jerk.abs() >
             (_thresholdJerk * speedMultiplier * sensitivityMultiplier)) {
           _lastTriggered['jerk'] = now;
@@ -358,10 +374,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       }
     }
 
-    // --- 3. 停车回弹 (点头) 检测 ---
-    // 逻辑：如果最近 1 秒内加速度有从明显的负值（刹车）到 0 以上的突变，且当前加速度回归静止
     if (!isDebounced('jerk') && _yHistory.length > 20) {
-      // 寻找最近 1 秒内的最小值（最强刹车点）和随后的回弹
       double minAy = 0;
       double maxAfterMin = -999;
       bool foundMin = false;
@@ -370,16 +383,14 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
         if (entry.value < minAy) {
           minAy = entry.value;
           foundMin = true;
-          maxAfterMin = -999; // 重置最小值之后的搜索
+          maxAfterMin = -999; 
         }
         if (foundMin && entry.value > maxAfterMin) {
           maxAfterMin = entry.value;
         }
       }
 
-      // 如果最小值小于 -1.5 (说明有刹车动作) 且回弹幅度大于 1.5
       if (minAy < -1.5 && (maxAfterMin - minAy) > 1.8) {
-        // 检查是否处于准静止状态 (速度极低或加速度计平稳)
         if (currentSpeedKmh < 2.0 || accel.y.abs() < 0.2) {
           _lastTriggered['jerk'] = now;
           _enqueueEvent(EventType.jerk, now);
@@ -387,7 +398,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       }
     }
 
-    // --- 4. 摆动检测 ---
     if (!isDebounced('wobble') && _xHistory.length > 10) {
       double minX = 0;
       double maxX = 0;
@@ -407,7 +417,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
 
       final span = maxX - minX;
 
-      // 计算窗口内的累积转角 (弧度)
       double totalYawChange = 0;
       if (_yawRateHistory.length > 1) {
         for (int i = 1; i < _yawRateHistory.length; i++) {
@@ -421,7 +430,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
         }
       }
 
-      // 如果 1 秒内转角超过 15 度 (约 0.26 弧度)，大概率是正在转弯，过滤掉摆动报警
       bool isTurning = totalYawChange.abs() > 0.26;
 
       if (span > (_thresholdWobbleSpan * sensitivityMultiplier) && !isTurning) {
@@ -453,6 +461,9 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       await WakelockPlus.enable();
 
       await _engine.calibrate();
+      
+      // 🟢 4. 开始录制前，重置滤波器
+      _navFilter.reset();
 
       state = state.copyWith(debugMessage: 'Initing Storage...');
       await _storage.init();
@@ -463,9 +474,9 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       _yawRateHistory.clear();
       _realtimeGHistory.clear();
 
-      // 【核心改进】点击开始瞬间，如果有位置，立即存入作为起点
       List<TrajectoryPoint> initialTrajectory = [];
       if (state.currentPosition != null) {
+        // 如果有位置，直接作为平滑后的起点（因为滤波器已重置，第一点直接信任）
         final startPoint = TrajectoryPoint()
           ..lat = state.currentPosition!.latitude
           ..lng = state.currentPosition!.longitude
@@ -485,8 +496,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
               final accelForPeak = sensorData.filteredAccel;
               final rawG = accelForPeak.length / 9.80665;
 
-              // 100ms 实时平滑 (30Hz 采样下约 3 帧)
-              // 理由：防止单帧高频振动导致实时最大 G 值虚高
               _realtimeGHistory.addLast(rawG);
               if (_realtimeGHistory.length > 3) _realtimeGHistory.removeFirst();
 
@@ -508,7 +517,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
         isCalibrating: false,
         currentTrip: trip,
         events: [],
-        trajectory: initialTrajectory, // 包含起始点
+        trajectory: initialTrajectory,
         currentDistance: 0.0,
         maxGForce: 0.0,
         debugMessage: 'Recording Active',
@@ -552,7 +561,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       ..timestamp = now
       ..type = type.name
       ..source = source
-      ..notes = notes ?? "" // 使用传入的备注
+      ..notes = notes ?? ""
       ..sensorData = fragment
           .map((d) => SensorPointEmbedded()
             ..ax = d.processedAccel.x
@@ -576,9 +585,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
     state = state.copyWith(events: [...state.events, event]);
   }
 
-  // --- 聚合引擎核心逻辑 ---
-
-  /// 将事件放入缓冲区待定
+  // --- 聚合引擎 ---
   void _enqueueEvent(EventType type, DateTime timestamp) {
     if (!state.isRecording) return;
 
@@ -590,16 +597,13 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       speed: state.currentPosition?.speed ?? 0,
     ));
 
-    // 如果计时器没启动，则启动它 (第一个入队的事件决定了窗口起始)
     _fusionTimer ??= Timer(_fusionWindow, _processPendingEvents);
   }
 
-  /// 处理缓冲区中的待定事件
   void _processPendingEvents() {
     _fusionTimer = null;
     if (_pendingEvents.isEmpty) return;
 
-    // 1. 优先级定义 (数值越小优先级越高)
     final priority = {
       EventType.rapidAcceleration: 1,
       EventType.rapidDeceleration: 1,
@@ -608,33 +612,18 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       EventType.wobble: 4,
     };
 
-    // 按照优先级排序
     _pendingEvents.sort(
         (a, b) => (priority[a.type] ?? 99).compareTo(priority[b.type] ?? 99));
 
-    // 2. 选取优先级最高的作为“主事件”
     var mainEvent = _pendingEvents.first;
-
-    // 3. 执行特殊的物理规则校验 (如车速门槛)
     final speedKmh = mainEvent.speed * 3.6;
     var finalType = mainEvent.type;
 
     if (finalType == EventType.rapidDeceleration && speedKmh < 5.0) {
-      // 场景：极低速下的剧烈减速信号，通常是停稳瞬间的“点头”或过坎
-      // 决策：将其修正为“顿挫 (Jerk)”，因为此时不具备“危险驾驶”的急刹性质
       finalType = EventType.jerk;
     }
 
-    // 4. 构建备注信息 (不再显示聚合特征，保持界面干净)
-    String? extraNotes;
-    // if (otherTypes.isNotEmpty) {
-    //   extraNotes = "聚合特征: ${otherTypes.join(', ')}";
-    // }
-
-    // 5. 最终上报/落库
-    tagEvent(finalType, source: mainEvent.source, notes: extraNotes);
-
-    // 6. 清空缓冲区，等待下一轮
+    tagEvent(finalType, source: mainEvent.source);
     _pendingEvents.clear();
   }
 
@@ -653,7 +642,6 @@ final recordingProvider =
   return RecordingNotifier(engine, storage, ref);
 });
 
-/// 聚合引擎使用的待定事件实体
 class _PendingEvent {
   final EventType type;
   final DateTime timestamp;
