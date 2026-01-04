@@ -1,18 +1,21 @@
+import 'dart:async';
+import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart'; // 用于距离计算
+import 'package:uuid/uuid.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+
 import 'package:puked/features/recording/domain/sensor_engine.dart';
 import 'package:puked/models/db_models.dart';
 import 'package:puked/models/sensor_data.dart';
 import 'package:puked/models/trip_event.dart';
 import 'package:puked/services/storage/storage_service.dart';
 import 'package:puked/features/settings/providers/settings_provider.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:uuid/uuid.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:latlong2/latlong.dart'; // 需要计算距离
-import 'dart:async';
-import 'dart:collection';
-
 // 🟢 引入 GPS 惯性算法
 import 'package:puked/common/utils/gps_kalman_filter.dart';
 
@@ -44,8 +47,8 @@ class RecordingState {
   final String debugMessage;
   final LocationPermission? permissionStatus;
   final bool isLowConfidenceGPS;
-  // 新增：GPS 实时精度数值 (用于 UI 遥测)
-  final double gpsAccuracy; 
+  // 🟢 新增：GPS 实时精度 (用于 UI 显示)
+  final double gpsAccuracy;
 
   RecordingState({
     required this.isRecording,
@@ -99,26 +102,27 @@ class RecordingState {
   }
 }
 
-class RecordingNotifier extends StateNotifier<RecordingState> {
+class RecordingNotifier extends StateNotifier<RecordingState>
+    with WidgetsBindingObserver {
   final SensorEngine _engine;
   final StorageService _storage;
   final Ref _ref;
   StreamSubscription<Position>? _positionSub;
   ProviderSubscription<AsyncValue<SensorData>>? _sensorSub;
 
-  // 🟢 1. 实例化惯性滤波器 (针对 iPhone 14 Pro 优化)
+  // 🟢 实例化惯性滤波器
   final _navFilter = GpsInertialFilter();
 
-  // 事件检测阈值 (m/s²)
+  // 事件检测阈值 (保持原始物理参数，无需变动)
   static const double _thresholdAccel = 3.14; 
-  static const double _thresholdDecel = -3.14;
-  static const double _thresholdWobbleSpan = 1.8;
+  static const double _thresholdDecel = -3.14; 
+  static const double _thresholdWobbleSpan = 1.8; 
   static const double _thresholdBump = 2.5; 
-  static const double _thresholdJerk = 6.0;
+  static const double _thresholdJerk = 6.0; 
 
   static const Duration _startProtectionDuration = Duration(seconds: 5);
   static const Duration _wobbleWindow = Duration(milliseconds: 1000);
-  static const Duration _jerkWindow = Duration(milliseconds: 300);
+  static const Duration _jerkWindow = Duration(milliseconds: 300); 
   DateTime? _recordingStartTime;
 
   final ListQueue<MapEntry<DateTime, double>> _xHistory = ListQueue();
@@ -135,8 +139,17 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
 
   RecordingNotifier(this._engine, this._storage, this._ref)
       : super(RecordingState(isRecording: false)) {
+    WidgetsBinding.instance.addObserver(this);
     Future.microtask(() => _initializeLocation());
     _engine.start();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && this.state.isRecording) {
+      debugPrint('App resumed, re-enabling Wakelock');
+      WakelockPlus.enable();
+    }
   }
 
   Future<void> _initializeLocation() async {
@@ -162,14 +175,13 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
 
         _positionSub?.cancel();
 
-        // 针对 iPhone 的高精度配置
         late LocationSettings locationSettings;
         if (defaultTargetPlatform == TargetPlatform.android) {
           locationSettings = AndroidSettings(
             accuracy: LocationAccuracy.high,
-            distanceFilter: 0, 
-            intervalDuration: const Duration(seconds: 1), // 1秒一次，配合惯性算法
-            forceLocationManager: true,
+            distanceFilter: 0,
+            intervalDuration: const Duration(seconds: 1), // 1秒更新，配合惯性算法
+            forceLocationManager: true, 
             foregroundNotificationConfig: const ForegroundNotificationConfig(
               notificationText: "Puked 正在记录行程中",
               notificationTitle: "实时记录中",
@@ -178,11 +190,12 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
           );
         } else {
           locationSettings = AppleSettings(
-            accuracy: LocationAccuracy.bestForNavigation, // 🟢 iPhone 开启最强导航模式
-            distanceFilter: 0, // 0米触发，交给我们自己的算法去平滑
+            // 🟢 iOS 14 Pro 优化：开启导航级精度 (L1+L5)
+            accuracy: LocationAccuracy.bestForNavigation,
+            distanceFilter: 0, 
             pauseLocationUpdatesAutomatically: false,
             showBackgroundLocationIndicator: true,
-            activityType: ActivityType.automotiveNavigation, // 声明为车载导航模式
+            activityType: ActivityType.automotiveNavigation,
           );
         }
 
@@ -209,12 +222,12 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
     }
   }
 
+  // 🟢 核心：位置更新与融合算法
   void _handlePositionUpdate(Position position) {
     final now = DateTime.now();
     final timestamp = position.timestamp?.millisecondsSinceEpoch ?? now.millisecondsSinceEpoch;
 
-    // 🟢 2. 核心处理：应用 GPS 惯性算法
-    // 利用 iPhone 14 Pro 的高精度 speed 和 heading 进行 Dead Reckoning
+    // 1. 调用惯性滤波器
     final fixedCoords = _navFilter.process(
       lat: position.latitude,
       lng: position.longitude,
@@ -223,52 +236,58 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       speed: position.speed < 0 ? 0 : position.speed,
       heading: position.heading < 0 ? 0 : position.heading,
       timestamp: timestamp,
-      speedAccuracy: position.speedAccuracy, // 利用 iOS 速度精度
+      speedAccuracy: position.speedAccuracy, 
+      headingAccuracy: position.headingAccuracy,
     );
 
-    // 获取平滑后的坐标 (WGS84)
+    // 2. 获取平滑后的坐标
     final double smoothLat = fixedCoords[0];
     final double smoothLng = fixedCoords[1];
-
-    // 更新 UI 状态，包括精度
-    state = state.copyWith(
-      lastLocationTime: now,
-      locationUpdateCount: state.locationUpdateCount + 1,
-      // 只要精度 > 40m 视为弱信号
-      isLowConfidenceGPS: position.accuracy > 40.0,
-      gpsAccuracy: position.accuracy,
-      debugMessage: 'GPS OK (±${position.accuracy.toStringAsFixed(0)}m)',
-      // 将平滑后的坐标作为 currentPosition 用于地图居中
-      // 注意：为了不破坏 Position 对象的其他字段(如 altitude)，我们 copy 一个新对象
-      currentPosition: Position(
-        latitude: smoothLat,
-        longitude: smoothLng,
-        timestamp: position.timestamp,
-        accuracy: position.accuracy,
-        altitude: position.altitude,
-        altitudeAccuracy: position.altitudeAccuracy,
-        heading: position.heading,
-        headingAccuracy: position.headingAccuracy,
-        speed: position.speed,
-        speedAccuracy: position.speedAccuracy,
-      ),
+    
+    // 3. 构造修正后的 Position 对象
+    final smoothPosition = Position(
+      latitude: smoothLat,
+      longitude: smoothLng,
+      timestamp: position.timestamp,
+      accuracy: position.accuracy,
+      altitude: position.altitude,
+      heading: position.heading,
+      speed: position.speed,
+      speedAccuracy: position.speedAccuracy,
+      altitudeAccuracy: position.altitudeAccuracy,
+      headingAccuracy: position.headingAccuracy,
     );
 
-    // 3. 记录轨迹逻辑
-    if (state.isRecording && state.currentTrip != null) {
-      // 精度门槛：虽然有平滑算法，但太离谱的点（>200m误差）还是不要了
-      if (position.accuracy > 200) return;
+    final bool isReliable = position.accuracy <= 50.0;
+    // 只要精度 > 40m，视为弱信号
+    final bool isLowConfidence = position.accuracy > 40.0;
 
-      // 距离增量计算 (使用平滑后的坐标)
-      double distanceDelta = 0.0;
+    // 更新 State
+    state = state.copyWith(
+      currentPosition: smoothPosition, // UI 使用平滑后的位置
+      lastLocationTime: now,
+      locationUpdateCount: state.locationUpdateCount + 1,
+      isLowConfidenceGPS: isLowConfidence,
+      gpsAccuracy: position.accuracy, // 记录原始精度用于 UI
+      debugMessage: isReliable
+          ? 'GPS OK (±${position.accuracy.toStringAsFixed(0)}m)'
+          : 'Poor Signal (±${position.accuracy.toStringAsFixed(0)}m)',
+    );
+
+    // 4. 记录轨迹逻辑 (基于平滑坐标)
+    if (state.isRecording && state.currentTrip != null && isReliable) {
+      if (position.accuracy > 200) return; // 飞点过滤保底
+
+      double distanceDelta = 0;
       if (state.trajectory.isNotEmpty) {
-        final last = state.trajectory.last;
+        final lastPoint = state.trajectory.last;
+        // 使用 Distance 库计算
         distanceDelta = const Distance().as(
           LengthUnit.Meter,
-          LatLng(last.lat, last.lng),
-          LatLng(smoothLat, smoothLng),
+          LatLng(lastPoint.lat, lastPoint.lng),
+          LatLng(smoothLat, smoothLng)
         );
-        // 过滤静止时的微小漂移 (< 0.5米不计入里程，防止等红灯时里程增加)
+        // 过滤极小漂移 (<0.5m 不计里程)
         if (distanceDelta < 0.5) distanceDelta = 0;
       }
 
@@ -278,7 +297,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
         ..altitude = position.altitude
         ..speed = position.speed
         ..timestamp = now
-        ..isLowConfidence = state.isLowConfidenceGPS;
+        ..isLowConfidence = isLowConfidence;
 
       final newDistance = state.currentDistance + distanceDelta;
       
@@ -293,7 +312,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
   }
 
   void _detectAutoEvents(SensorData data) {
-    // ... (传感器检测逻辑，完全保持原样)
+    // ... 原始逻辑保持不变 ...
     final now = DateTime.now();
     if (state.isCalibrating) return;
     if (_recordingStartTime != null &&
@@ -327,6 +346,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
     if (sensitivity == SensitivityLevel.medium) sensitivityMultiplier = 0.8;
     if (sensitivity == SensitivityLevel.high) sensitivityMultiplier = 0.6;
 
+    // 动态速度敏感度
     double speedMultiplier = 1.0;
     final currentSpeedKmh = (state.currentPosition?.speed ?? 0) * 3.6;
 
@@ -346,6 +366,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       return now.difference(last) < _debounceDuration;
     }
 
+    // 事件判定
     if (accel.y < (_thresholdDecel * finalMultiplier) &&
         !isDebounced('rapidDeceleration')) {
       _lastTriggered['rapidDeceleration'] = now;
@@ -356,6 +377,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       _enqueueEvent(EventType.rapidAcceleration, now);
     }
 
+    // Jerk 检测
     if (!isDebounced('jerk') && _yHistory.length > 5) {
       final recentY =
           _yHistory.where((e) => now.difference(e.key) < _jerkWindow).toList();
@@ -374,6 +396,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       }
     }
 
+    // 停车点头检测
     if (!isDebounced('jerk') && _yHistory.length > 20) {
       double minAy = 0;
       double maxAfterMin = -999;
@@ -383,7 +406,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
         if (entry.value < minAy) {
           minAy = entry.value;
           foundMin = true;
-          maxAfterMin = -999; 
+          maxAfterMin = -999;
         }
         if (foundMin && entry.value > maxAfterMin) {
           maxAfterMin = entry.value;
@@ -398,6 +421,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       }
     }
 
+    // 摆动检测
     if (!isDebounced('wobble') && _xHistory.length > 10) {
       double minX = 0;
       double maxX = 0;
@@ -416,7 +440,6 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       }
 
       final span = maxX - minX;
-
       double totalYawChange = 0;
       if (_yawRateHistory.length > 1) {
         for (int i = 1; i < _yawRateHistory.length; i++) {
@@ -445,6 +468,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
       }
     }
 
+    // 颠簸检测
     if (accel.z.abs() > (_thresholdBump * sensitivityMultiplier) &&
         !isDebounced('bump')) {
       _lastTriggered['bump'] = now;
@@ -462,7 +486,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
 
       await _engine.calibrate();
       
-      // 🟢 4. 开始录制前，重置滤波器
+      // 🟢 3. 开始录制前，重置惯性滤波器
       _navFilter.reset();
 
       state = state.copyWith(debugMessage: 'Initing Storage...');
@@ -476,7 +500,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
 
       List<TrajectoryPoint> initialTrajectory = [];
       if (state.currentPosition != null) {
-        // 如果有位置，直接作为平滑后的起点（因为滤波器已重置，第一点直接信任）
+        // 使用当前位置作为起始点
         final startPoint = TrajectoryPoint()
           ..lat = state.currentPosition!.latitude
           ..lng = state.currentPosition!.longitude
@@ -497,7 +521,8 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
               final rawG = accelForPeak.length / 9.80665;
 
               _realtimeGHistory.addLast(rawG);
-              if (_realtimeGHistory.length > 3) _realtimeGHistory.removeFirst();
+              // 100Hz 采样，平滑窗口适当加大到 6
+              if (_realtimeGHistory.length > 6) _realtimeGHistory.removeFirst();
 
               final smoothedG = _realtimeGHistory.reduce((a, b) => a + b) /
                   _realtimeGHistory.length;
@@ -554,7 +579,8 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
     if (!state.isRecording || state.currentTrip == null) return;
 
     final now = DateTime.now();
-    final fragment = _engine.getLookbackBuffer(10);
+    // 🟢 适配 100Hz 下采样：存库时降采样到 20Hz 节省空间
+    final fragment = _engine.getLookbackBuffer(10, targetHz: 20);
 
     final event = RecordedEvent()
       ..uuid = const Uuid().v4()
@@ -629,6 +655,7 @@ class RecordingNotifier extends StateNotifier<RecordingState> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _positionSub?.cancel();
     _sensorSub?.close();
     super.dispose();
