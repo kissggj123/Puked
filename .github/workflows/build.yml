@@ -76,9 +76,9 @@ jobs:
         run: |
           # 提取版本号，去除 v 前缀 (例如 v1.0.3 -> 1.0.3)
           VERSION_NAME=$(echo ${{ github.ref_name }} | sed 's/^v//')
-          # 如果不是从 tag 触发，则使用默认版本
+          # 如果不是从 tag 触发，则使用当前主版本号
           if [[ ! ${{ github.ref_name }} =~ ^v ]]; then
-            VERSION_NAME="1.0.8"
+            VERSION_NAME="2.1.0"
           fi
           
           flutter pub get
@@ -98,7 +98,7 @@ jobs:
           path: build/app/outputs/flutter-apk/Puked-*.apk
 
       # 仅在推送以 v 开头的标签时才创建 GitHub Release
-      - name: Create Release
+      - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -107,10 +107,73 @@ jobs:
           body: |
             ## Puked ${{ github.ref_name }}
             
-            这是自动构建的版本。
+            这是从 GitHub Actions 自动构建并同步的版本。
             
             ### 更新日志
             ${{ github.event.head_commit.message }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 101. 新增：同步到 Gitea (通过链接方式)
+      - name: Sync to Gitea Release
+        run: |
+          VERSION_NAME=${{ github.ref_name }}
+          # 确定版本名和 Release 标题
+          if [[ ${{ github.ref }} == refs/tags/v* ]]; then
+            RELEASE_NAME="Puked $VERSION_NAME"
+          else
+            VERSION_NAME="latest-main"
+            RELEASE_NAME="Puked Main (Rolling Build)"
+          fi
+
+          # 获取 GitHub 原始下载链接
+          GITHUB_APK_URL="https://github.com/hkgood/Puked/releases/download/$VERSION_NAME/Puked-2.1.0.apk"
+          if [[ ${{ github.ref }} == refs/tags/v* ]]; then
+             GITHUB_APK_URL="https://github.com/hkgood/Puked/releases/download/$VERSION_NAME/Puked-${VERSION_NAME#v}.apk"
+          fi
+
+          # 生成国内加速链接 (使用常用的 ghproxy 代理)
+          # 这样你在国内点击这个链接，会通过加速节点下载
+          CN_PROXY_URL="https://ghproxy.cn/$GITHUB_APK_URL"
+
+          echo "Gitea Syncing... Linking to GitHub APK: $GITHUB_APK_URL"
+
+          # 1. 在 Gitea 上创建/更新 Release，并在正文中加入两种链接
+          RELEASE_BODY="### 🚀 自动构建版本\n\n#### 📥 下载地址\n\n- **[官方下载 (GitHub 原始链接)]($GITHUB_APK_URL)**\n- **[⚡️ 国内加速下载 (推荐国内用户点击)]($CN_PROXY_URL)**\n\n---\n*同步自 GitHub Actions. Commit: ${{ github.sha }}*"
+
+          
+          # 确保 jq 已安装
+          if ! command -v jq &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+
+          RELEASE_JSON=$(curl -s -X 'POST' \
+            "https://gitea.com/api/v1/repos/hkgood/Puked/releases" \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"tag_name\": \"$VERSION_NAME\",
+              \"name\": \"$RELEASE_NAME\",
+              \"body\": \"$RELEASE_BODY\",
+              \"draft\": false,
+              \"prerelease\": false
+            }")
+          
+          # 如果已存在 (409 conflict)，则更新 Release 正文
+          RELEASE_ID=$(echo $RELEASE_JSON | jq -r '.id')
+          if [ "$RELEASE_ID" == "null" ] || [ -z "$RELEASE_ID" ]; then
+            RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+              "https://gitea.com/api/v1/repos/hkgood/Puked/releases" | \
+              jq -r ".[] | select(.tag_name==\"$VERSION_NAME\") | .id")
+            
+            echo "Updating existing Gitea Release ID: $RELEASE_ID"
+            curl -s -X 'PATCH' \
+              "https://gitea.com/api/v1/repos/hkgood/Puked/releases/$RELEASE_ID" \
+              -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"body\": \"$RELEASE_BODY\"}"
+          fi
+
+
+

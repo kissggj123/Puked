@@ -41,12 +41,28 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final arena = ref.watch(arenaProvider);
     final i18n = ref.watch(i18nProvider);
+    final cloudTripsAsync = ref.watch(arenaCloudTripsProvider);
+    final arena = ref.watch(arenaProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(i18n.t('arena')),
+        actions: [
+          // 在 AppBar 右侧显示同步状态
+          cloudTripsAsync.maybeWhen(
+            loading: () => Container(
+              margin: const EdgeInsets.only(right: 16),
+              width: 16,
+              height: 16,
+              child: const CircularProgressIndicator(strokeWidth: 2),
+            ),
+            orElse: () => IconButton(
+              icon: const Icon(Icons.sync, size: 20),
+              onPressed: _onRefresh,
+            ),
+          ),
+        ],
       ),
       body: SafeArea(
         left: true,
@@ -55,46 +71,120 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
         bottom: false,
         child: RefreshIndicator(
           onRefresh: _onRefresh,
-          child: arena.trips.isEmpty
-              ? ListView(
-                  // 使用 ListView 确保在空状态下也能下拉刷新
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  children: [
-                    SizedBox(
-                      height: MediaQuery.of(context).size.height * 0.7,
-                      child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.leaderboard_outlined,
-                                size: 64,
-                                color: Theme.of(context).colorScheme.outline),
-                            const SizedBox(height: 16),
-                            Text(i18n.t('no_trips_yet'),
-                                style: TextStyle(
-                                    color:
-                                        Theme.of(context).colorScheme.outline)),
-                          ],
+          child: cloudTripsAsync.when(
+            loading: () => Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .primary
+                          .withValues(alpha: 0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                              Theme.of(context).colorScheme.primary),
                         ),
                       ),
                     ),
-                  ],
-                )
-              : SingleChildScrollView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-                  child: Column(
-                    children: [
-                      _buildCard1(arena, i18n),
-                      const SizedBox(height: 16),
-                      _buildTotalMileageCard(arena, i18n),
-                      const SizedBox(height: 16),
-                      _buildCard2(arena, i18n),
-                      const SizedBox(height: 16),
-                      _buildCard3(arena, i18n),
-                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    i18n.t('syncing'),
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Theme.of(context).colorScheme.onSurface,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    i18n.locale.languageCode == 'zh'
+                        ? '正在连接到全球竞技场...'
+                        : 'Connecting to Global Arena...',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            error: (err, stack) => ListView(
+              children: [
+                SizedBox(
+                  height: MediaQuery.of(context).size.height * 0.7,
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.error_outline,
+                            size: 64, color: Colors.red),
+                        const SizedBox(height: 16),
+                        Text('Error: $err'),
+                        TextButton(
+                          onPressed: _onRefresh,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
+              ],
+            ),
+            data: (trips) => trips.isEmpty
+                ? ListView(
+                    // 使用 ListView 确保在空状态下也能下拉刷新
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      SizedBox(
+                        height: MediaQuery.of(context).size.height * 0.7,
+                        child: Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.leaderboard_outlined,
+                                  size: 64,
+                                  color: Theme.of(context).colorScheme.outline),
+                              const SizedBox(height: 16),
+                              Text(i18n.t('no_trips_yet'),
+                                  style: TextStyle(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outline)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                    child: Column(
+                      children: [
+                        _buildCard1(arena, i18n),
+                        const SizedBox(height: 16),
+                        _buildTotalMileageCard(arena, i18n),
+                        const SizedBox(height: 16),
+                        _buildCard2(arena, i18n),
+                        const SizedBox(height: 16),
+                        _buildCard3(arena, i18n),
+                      ],
+                    ),
+                  ),
+          ),
         ),
       ),
     );
@@ -235,13 +325,30 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            item.displayName,
-                            style: const TextStyle(
-                              fontSize: nameFontSize,
-                              fontWeight: FontWeight.bold,
-                              height: 1.2,
-                            ),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                item.displayName,
+                                style: const TextStyle(
+                                  fontSize: nameFontSize,
+                                  fontWeight: FontWeight.bold,
+                                  height: 1.2,
+                                ),
+                              ),
+                              Text(
+                                val.toStringAsFixed(1),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurface
+                                      .withValues(alpha: 0.8),
+                                  fontFamily: 'monospace',
+                                ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: spacingBetween),
                           Stack(
@@ -268,17 +375,6 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                                     color:
                                         Theme.of(context).colorScheme.primary,
                                     borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  alignment: Alignment.centerRight,
-                                  padding: const EdgeInsets.only(right: 6),
-                                  child: Text(
-                                    val.toStringAsFixed(1),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      fontFamily: 'monospace',
-                                    ),
                                   ),
                                 ),
                               ),
@@ -515,6 +611,46 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
     final brand = _card2Brand ?? arena.getDefaultBrand();
     final data = arena.getEvolutionData(brand);
 
+    // 计算 Y 轴最大值和刻度间隔 (对齐 Web 端规整算法)
+    double maxVal = 0;
+    for (var item in data.evolution) {
+      if (item.kmPerEvent > maxVal) maxVal = item.kmPerEvent;
+    }
+
+    // 抽稀算法：根据最大值动态计算合适的 Y 轴间隔 (最多约 8 个标签)
+    double intervalY = 1.0;
+    if (maxVal <= 2.5) {
+      intervalY = 0.5;
+    } else {
+      // 预定义的“规整”间隔
+      final List<double> niceIntervals = [
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        20.0,
+        50.0,
+        100.0,
+        200.0,
+        500.0,
+        1000.0
+      ];
+      for (var interval in niceIntervals) {
+        // 目标：标签数 (maxVal / interval) 的向上取整 + 1 (0刻度) + 1 (顶层余量) <= 8
+        // 即 ceil(maxVal / interval) <= 6
+        if ((maxVal / interval).ceil() <= 6) {
+          intervalY = interval;
+          break;
+        }
+        intervalY = interval; // 如果都不满足，使用最大的间隔
+      }
+    }
+
+    double niceMax = (maxVal / intervalY).ceil() * intervalY;
+    // 留出至少一个间隔的余量，避免柱子触顶，同时也作为 Y 轴最大刻度
+    niceMax += intervalY;
+    if (niceMax < 1.0) niceMax = 1.0;
+
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -580,8 +716,8 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                             fontSize: 12),
                       ),
                     )
-                  : LineChart(
-                      LineChartData(
+                  : BarChart(
+                      BarChartData(
                         gridData: const FlGridData(
                             show: true, drawVerticalLine: false),
                         titlesData: FlTitlesData(
@@ -589,15 +725,17 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                             sideTitles: SideTitles(
                               showTitles: true,
                               getTitlesWidget: (value, meta) {
-                                if (value.toInt() < 0 ||
-                                    value.toInt() >= data.evolution.length) {
+                                final index = value.toInt();
+                                if (index < 0 ||
+                                    index >= data.evolution.length) {
                                   return const SizedBox();
                                 }
                                 return Padding(
                                   padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(
-                                      data.evolution[value.toInt()].version,
-                                      style: const TextStyle(fontSize: 10)),
+                                  child: Text(data.evolution[index].version,
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold)),
                                 );
                               },
                             ),
@@ -606,9 +744,12 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                             sideTitles: SideTitles(
                               showTitles: true,
                               reservedSize: 30,
+                              interval: intervalY,
                               getTitlesWidget: (value, meta) => Text(
                                   value.toStringAsFixed(1),
-                                  style: const TextStyle(fontSize: 10)),
+                                  style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold)),
                             ),
                           ),
                           topTitles: const AxisTitles(
@@ -617,20 +758,44 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                               sideTitles: SideTitles(showTitles: false)),
                         ),
                         borderData: FlBorderData(show: false),
-                        lineBarsData: [
-                          LineChartBarData(
-                            spots: data.evolution
-                                .asMap()
-                                .entries
-                                .map((e) => FlSpot(
-                                    e.key.toDouble(), e.value.kmPerEvent))
-                                .toList(),
-                            isCurved: data.evolution.length > 1, // 只有一个点时不需要曲线
-                            color: Theme.of(context).colorScheme.secondary,
-                            barWidth: 4,
-                            dotData: const FlDotData(show: true),
+                        minY: 0,
+                        maxY: niceMax,
+                        barGroups: data.evolution.asMap().entries.map((e) {
+                          return BarChartGroupData(
+                            x: e.key,
+                            barRods: [
+                              BarChartRodData(
+                                toY: e.value.kmPerEvent,
+                                color: Theme.of(context).colorScheme.secondary,
+                                width: 28,
+                                borderRadius: const BorderRadius.vertical(
+                                    top: Radius.circular(6)),
+                              ),
+                            ],
+                            showingTooltipIndicators: [0],
+                          );
+                        }).toList(),
+                        barTouchData: BarTouchData(
+                          enabled: false, // 始终显示，不需要触摸
+                          touchTooltipData: BarTouchTooltipData(
+                            getTooltipColor: (_) => Colors.transparent,
+                            tooltipPadding: EdgeInsets.zero,
+                            tooltipMargin: 8,
+                            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                              return BarTooltipItem(
+                                rod.toY.toStringAsFixed(1),
+                                TextStyle(
+                                  color:
+                                      Theme.of(context).colorScheme.secondary,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
+                              );
+                            },
                           ),
-                        ],
+                        ),
+                        // 增加组间距，确保每个 bar 左右有空间
+                        alignment: BarChartAlignment.spaceAround,
                       ),
                     ),
             )

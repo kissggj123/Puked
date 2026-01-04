@@ -33,7 +33,10 @@ class ExportService {
         "metadata": {
           "start_time": trip.startTime.toIso8601String(),
           "end_time": trip.endTime?.toIso8601String(),
-          "car_model": trip.carModel ?? "Unknown",
+          "car_model": trip.carModel ?? "Others",
+          "app_version": trip.appVersion ?? "Others",
+          "platform": trip.platform ?? "Others",
+          "algorithm": trip.algorithm ?? "Others",
           "notes": trip.notes ?? "",
           "event_count": trip.eventCount,
         },
