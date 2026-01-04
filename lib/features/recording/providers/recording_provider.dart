@@ -1,22 +1,20 @@
-import 'dart:async';
-import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:latlong2/latlong.dart'; // 用于距离计算
-import 'package:uuid/uuid.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
-
 import 'package:puked/features/recording/domain/sensor_engine.dart';
 import 'package:puked/models/db_models.dart';
 import 'package:puked/models/sensor_data.dart';
 import 'package:puked/models/trip_event.dart';
 import 'package:puked/services/storage/storage_service.dart';
 import 'package:puked/features/settings/providers/settings_provider.dart';
-// 🟢 引入 GPS 惯性算法
+import 'package:geolocator/geolocator.dart';
+import 'package:uuid/uuid.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:latlong2/latlong.dart'; // 用于计算距离
+import 'dart:async';
+import 'dart:collection';
+
+// 🟢 1. 引入 GPS 惯性算法文件
 import 'package:puked/common/utils/gps_kalman_filter.dart';
 
 // 传感器引擎 Provider
@@ -33,6 +31,11 @@ final sensorStreamProvider = StreamProvider<SensorData>((ref) {
   return engine.sensorStream;
 });
 
+enum AlgorithmMode {
+  standard, 
+  expert 
+}
+
 class RecordingState {
   final bool isRecording;
   final bool isCalibrating;
@@ -41,13 +44,17 @@ class RecordingState {
   final List<TrajectoryPoint> trajectory;
   final double currentDistance;
   final double maxGForce;
+  final double currentGForce;
   final Position? currentPosition;
   final DateTime? lastLocationTime;
   final int locationUpdateCount;
   final String debugMessage;
   final LocationPermission? permissionStatus;
   final bool isLowConfidenceGPS;
-  // 🟢 新增：GPS 实时精度 (用于 UI 显示)
+  final AlgorithmMode algorithmMode;
+  final bool isSensorFrozen;
+  
+  // 🟢 新增：GPS 精度 (用于 UI 显示)
   final double gpsAccuracy;
 
   RecordingState({
@@ -58,12 +65,15 @@ class RecordingState {
     this.trajectory = const [],
     this.currentDistance = 0.0,
     this.maxGForce = 0.0,
+    this.currentGForce = 0.0,
     this.currentPosition,
     this.lastLocationTime,
     this.locationUpdateCount = 0,
     this.debugMessage = '',
     this.permissionStatus,
     this.isLowConfidenceGPS = false,
+    this.algorithmMode = AlgorithmMode.expert, 
+    this.isSensorFrozen = false,
     this.gpsAccuracy = 0.0,
   });
 
@@ -75,12 +85,15 @@ class RecordingState {
     List<TrajectoryPoint>? trajectory,
     double? currentDistance,
     double? maxGForce,
+    double? currentGForce,
     Position? currentPosition,
     DateTime? lastLocationTime,
     int? locationUpdateCount,
     String? debugMessage,
     LocationPermission? permissionStatus,
     bool? isLowConfidenceGPS,
+    AlgorithmMode? algorithmMode,
+    bool? isSensorFrozen,
     double? gpsAccuracy,
   }) {
     return RecordingState(
@@ -91,12 +104,15 @@ class RecordingState {
       trajectory: trajectory ?? this.trajectory,
       currentDistance: currentDistance ?? this.currentDistance,
       maxGForce: maxGForce ?? this.maxGForce,
+      currentGForce: currentGForce ?? this.currentGForce,
       currentPosition: currentPosition ?? this.currentPosition,
       lastLocationTime: lastLocationTime ?? this.lastLocationTime,
       locationUpdateCount: locationUpdateCount ?? this.locationUpdateCount,
       debugMessage: debugMessage ?? this.debugMessage,
       permissionStatus: permissionStatus ?? this.permissionStatus,
       isLowConfidenceGPS: isLowConfidenceGPS ?? this.isLowConfidenceGPS,
+      algorithmMode: algorithmMode ?? this.algorithmMode,
+      isSensorFrozen: isSensorFrozen ?? this.isSensorFrozen,
       gpsAccuracy: gpsAccuracy ?? this.gpsAccuracy,
     );
   }
@@ -110,10 +126,10 @@ class RecordingNotifier extends StateNotifier<RecordingState>
   StreamSubscription<Position>? _positionSub;
   ProviderSubscription<AsyncValue<SensorData>>? _sensorSub;
 
-  // 🟢 实例化惯性滤波器
+  // 🟢 2. 实例化终极惯性滤波器
   final _navFilter = GpsInertialFilter();
 
-  // 事件检测阈值 (保持原始物理参数，无需变动)
+  // 事件检测阈值
   static const double _thresholdAccel = 3.14; 
   static const double _thresholdDecel = -3.14; 
   static const double _thresholdWobbleSpan = 1.8; 
@@ -180,7 +196,7 @@ class RecordingNotifier extends StateNotifier<RecordingState>
           locationSettings = AndroidSettings(
             accuracy: LocationAccuracy.high,
             distanceFilter: 0,
-            intervalDuration: const Duration(seconds: 1), // 1秒更新，配合惯性算法
+            intervalDuration: const Duration(seconds: 1), // 1秒一次，配合惯性算法
             forceLocationManager: true, 
             foregroundNotificationConfig: const ForegroundNotificationConfig(
               notificationText: "Puked 正在记录行程中",
@@ -190,7 +206,7 @@ class RecordingNotifier extends StateNotifier<RecordingState>
           );
         } else {
           locationSettings = AppleSettings(
-            // 🟢 iOS 14 Pro 优化：开启导航级精度 (L1+L5)
+            // 🟢 iOS 优化：开启导航级精度 (L1+L5)
             accuracy: LocationAccuracy.bestForNavigation,
             distanceFilter: 0, 
             pauseLocationUpdatesAutomatically: false,
@@ -227,7 +243,7 @@ class RecordingNotifier extends StateNotifier<RecordingState>
     final now = DateTime.now();
     final timestamp = position.timestamp?.millisecondsSinceEpoch ?? now.millisecondsSinceEpoch;
 
-    // 1. 调用惯性滤波器
+    // 1. 调用惯性滤波器 (GpsInertialFilter)
     final fixedCoords = _navFilter.process(
       lat: position.latitude,
       lng: position.longitude,
@@ -243,8 +259,18 @@ class RecordingNotifier extends StateNotifier<RecordingState>
     // 2. 获取平滑后的坐标
     final double smoothLat = fixedCoords[0];
     final double smoothLng = fixedCoords[1];
-    
-    // 3. 构造修正后的 Position 对象
+
+    // 🟢 修复3：速度死区 (防止静止时数字乱跳)
+    double displaySpeed = position.speed;
+    if (displaySpeed < 0.8) { // 2.88 km/h 以下显示为 0
+      displaySpeed = 0.0;
+    }
+
+    final bool isReliable = position.accuracy <= 50.0;
+    // 只要精度 > 40m，视为弱信号
+    final bool isLowConfidence = position.accuracy > 40.0;
+
+    // 构造修正后的 Position 对象用于 UI 和逻辑
     final smoothPosition = Position(
       latitude: smoothLat,
       longitude: smoothLng,
@@ -252,15 +278,11 @@ class RecordingNotifier extends StateNotifier<RecordingState>
       accuracy: position.accuracy,
       altitude: position.altitude,
       heading: position.heading,
-      speed: position.speed,
+      speed: displaySpeed, // 使用过滤后的速度
       speedAccuracy: position.speedAccuracy,
       altitudeAccuracy: position.altitudeAccuracy,
       headingAccuracy: position.headingAccuracy,
     );
-
-    final bool isReliable = position.accuracy <= 50.0;
-    // 只要精度 > 40m，视为弱信号
-    final bool isLowConfidence = position.accuracy > 40.0;
 
     // 更新 State
     state = state.copyWith(
@@ -274,14 +296,14 @@ class RecordingNotifier extends StateNotifier<RecordingState>
           : 'Poor Signal (±${position.accuracy.toStringAsFixed(0)}m)',
     );
 
-    // 4. 记录轨迹逻辑 (基于平滑坐标)
+    // 3. 记录轨迹逻辑 (基于平滑坐标)
     if (state.isRecording && state.currentTrip != null && isReliable) {
       if (position.accuracy > 200) return; // 飞点过滤保底
 
       double distanceDelta = 0;
       if (state.trajectory.isNotEmpty) {
         final lastPoint = state.trajectory.last;
-        // 使用 Distance 库计算
+        // 使用 Distance 库计算平滑后的两点距离
         distanceDelta = const Distance().as(
           LengthUnit.Meter,
           LatLng(lastPoint.lat, lastPoint.lng),
@@ -292,10 +314,10 @@ class RecordingNotifier extends StateNotifier<RecordingState>
       }
 
       final point = TrajectoryPoint()
-        ..lat = smoothLat
-        ..lng = smoothLng
+        ..lat = smoothLat // 存入平滑坐标
+        ..lng = smoothLng // 存入平滑坐标
         ..altitude = position.altitude
-        ..speed = position.speed
+        ..speed = displaySpeed // 存入过滤后的速度
         ..timestamp = now
         ..isLowConfidence = isLowConfidence;
 
@@ -312,7 +334,7 @@ class RecordingNotifier extends StateNotifier<RecordingState>
   }
 
   void _detectAutoEvents(SensorData data) {
-    // ... 原始逻辑保持不变 ...
+    // ... (传感器检测逻辑，完全保持原样)
     final now = DateTime.now();
     if (state.isCalibrating) return;
     if (_recordingStartTime != null &&
@@ -346,7 +368,6 @@ class RecordingNotifier extends StateNotifier<RecordingState>
     if (sensitivity == SensitivityLevel.medium) sensitivityMultiplier = 0.8;
     if (sensitivity == SensitivityLevel.high) sensitivityMultiplier = 0.6;
 
-    // 动态速度敏感度
     double speedMultiplier = 1.0;
     final currentSpeedKmh = (state.currentPosition?.speed ?? 0) * 3.6;
 
@@ -366,7 +387,7 @@ class RecordingNotifier extends StateNotifier<RecordingState>
       return now.difference(last) < _debounceDuration;
     }
 
-    // 事件判定
+    // 检测逻辑
     if (accel.y < (_thresholdDecel * finalMultiplier) &&
         !isDebounced('rapidDeceleration')) {
       _lastTriggered['rapidDeceleration'] = now;
@@ -377,7 +398,6 @@ class RecordingNotifier extends StateNotifier<RecordingState>
       _enqueueEvent(EventType.rapidAcceleration, now);
     }
 
-    // Jerk 检测
     if (!isDebounced('jerk') && _yHistory.length > 5) {
       final recentY =
           _yHistory.where((e) => now.difference(e.key) < _jerkWindow).toList();
@@ -396,7 +416,6 @@ class RecordingNotifier extends StateNotifier<RecordingState>
       }
     }
 
-    // 停车点头检测
     if (!isDebounced('jerk') && _yHistory.length > 20) {
       double minAy = 0;
       double maxAfterMin = -999;
@@ -406,7 +425,7 @@ class RecordingNotifier extends StateNotifier<RecordingState>
         if (entry.value < minAy) {
           minAy = entry.value;
           foundMin = true;
-          maxAfterMin = -999;
+          maxAfterMin = -999; 
         }
         if (foundMin && entry.value > maxAfterMin) {
           maxAfterMin = entry.value;
@@ -421,7 +440,6 @@ class RecordingNotifier extends StateNotifier<RecordingState>
       }
     }
 
-    // 摆动检测
     if (!isDebounced('wobble') && _xHistory.length > 10) {
       double minX = 0;
       double maxX = 0;
@@ -468,7 +486,6 @@ class RecordingNotifier extends StateNotifier<RecordingState>
       }
     }
 
-    // 颠簸检测
     if (accel.z.abs() > (_thresholdBump * sensitivityMultiplier) &&
         !isDebounced('bump')) {
       _lastTriggered['bump'] = now;

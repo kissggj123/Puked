@@ -160,7 +160,7 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
     final i18n = ref.watch(i18nProvider);
 
     ref.listen(recordingProvider, (prev, next) {
-      // 1. 弹窗监听
+      // 1. 弹窗逻辑 (保持不变)
       if (next.events.length > _lastEventCount) {
         _lastEventCount = next.events.length;
         if (next.isRecording && next.events.isNotEmpty) {
@@ -168,26 +168,26 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
         }
       }
       
-      // 🟢 2. 地图随动旋转逻辑 (Course Up)
-      if (_isUserInteracting) return; // 如果用户正在操作，暂不自动旋转
+      // 🟢 2. 地图强制跟随修复
+      if (_isUserInteracting) return; // 如果人手在动，就不自动动
 
       final pos = next.currentPosition;
       if (pos != null) {
         final speedKmh = pos.speed * 3.6;
         double targetRotation;
 
-        // 只有速度大于 3km/h 时，才强制改变地图方向 (防抖)
+        // 旋转逻辑：只有真的跑起来才旋转，否则保持原样
         if (speedKmh > 3.0) {
-           // 行驶中：让地图逆时针旋转，实现"车头朝上"
            targetRotation = -pos.heading;
         } else {
-           // 静止/蠕行时：锁定当前地图角度，绝对不许动！
            targetRotation = _mapController.camera.rotation;
         }
         
+        // 🟢 强制移动地图中心
+        // 之前可能因为速度为0不触发，现在只要有位置更新就触发居中
         _mapController.moveAndRotate(
           LatLng(pos.latitude, pos.longitude),
-          17.0, // 锁定缩放级别
+          17.0, // 锁定缩放，防止被误触改变
           targetRotation 
         );
       }

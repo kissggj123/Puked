@@ -191,13 +191,13 @@ class TripMapView extends StatefulWidget {
 class _TripMapViewState extends State<TripMapView>
     with TickerProviderStateMixin {
   late final MapController _mapController; // 改为 late final
-  Timer? _recenterTimer;
-  bool _isUserInteracting = false;
+  // Timer? _recenterTimer; // 🟢 移除内部 timer，避免和外部逻辑冲突
+  // bool _isUserInteracting = false; // 🟢 移除内部状态
 
   @override
   void initState() {
     super.initState();
-    // 🟢 如果外部传了就用外部的，否则自己新建
+    // 🟢 核心修复：如果外部传了就用外部的，否则自己新建
     _mapController = widget.mapController ?? MapController();
   }
 
@@ -247,6 +247,7 @@ class _TripMapViewState extends State<TripMapView>
 
     for (var i = 0; i < widget.trajectory.length; i++) {
       final p = widget.trajectory[i];
+      // 🟢 纠偏
       final fixedP = CoordConv.fix(p.lat, p.lng);
       
       final isLow = p.isLowConfidence ?? false;
@@ -282,34 +283,12 @@ class _TripMapViewState extends State<TripMapView>
 
   @override
   void dispose() {
-    _recenterTimer?.cancel();
-    // 🟢 如果 Controller 是外部传进来的，不要在这里 dispose，由外部负责
+    // 🟢 核心修复：只有当 Controller 是内部创建时，才由内部销毁
+    // 如果是外部传进来的，外部（RecordingScreen）会负责 dispose
     if (widget.mapController == null) {
       _mapController.dispose();
     }
     super.dispose();
-  }
-
-  void _startRecenterTimer() {
-    _recenterTimer?.cancel();
-    _recenterTimer = Timer(const Duration(seconds: 5), () {
-      if (mounted && widget.isLive) {
-        setState(() => _isUserInteracting = false);
-        _recenterToCurrentLocation();
-      }
-    });
-  }
-
-  void _recenterToCurrentLocation() {
-    if (!mounted) return;
-    if (widget.currentPosition != null) {
-      final fixedPos = CoordConv.fix(widget.currentPosition!.latitude, widget.currentPosition!.longitude);
-      _mapController.move(fixedPos, _mapController.camera.zoom);
-    } else if (widget.trajectory.isNotEmpty) {
-      final last = widget.trajectory.last;
-      final fixedLast = CoordConv.fix(last.lat, last.lng);
-      _mapController.move(fixedLast, _mapController.camera.zoom);
-    }
   }
 
   @override
@@ -320,16 +299,8 @@ class _TripMapViewState extends State<TripMapView>
         widget.focusPoint != oldWidget.focusPoint) {
       _animatedMapMove(widget.focusPoint!, 17.0);
     }
-
-    if (widget.isLive && !_isUserInteracting) {
-      // 🟢 如果外部控制了地图 (比如 Course Up)，这里就不需要重复 move 了
-      // 但为了保险起见，或者为了非录制模式下的跟随，保留基本逻辑
-      if (widget.mapController == null && 
-         (widget.currentPosition != oldWidget.currentPosition ||
-          widget.trajectory.length != oldWidget.trajectory.length)) {
-        _recenterToCurrentLocation();
-      }
-    }
+    
+    // 🟢 移除旧的自动跟随逻辑，完全由外部控制
   }
 
   @override
@@ -363,12 +334,6 @@ class _TripMapViewState extends State<TripMapView>
           interactionOptions: const InteractionOptions(
             flags: InteractiveFlag.all,
           ),
-          onPointerDown: (_, __) {
-            if (widget.isLive) {
-              setState(() => _isUserInteracting = true);
-              _startRecenterTimer();
-            }
-          },
           onMapReady: () {
             if (!widget.isLive && widget.trajectory.isNotEmpty) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -389,6 +354,7 @@ class _TripMapViewState extends State<TripMapView>
           },
         ),
         children: [
+          // 🟢 Layer 1: 高德卫星底图 (style=6)
           TileLayer(
             urlTemplate: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}',
             subdomains: const ['1', '2', '3', '4'],
@@ -400,6 +366,8 @@ class _TripMapViewState extends State<TripMapView>
             tileDisplay: const TileDisplay.fadeIn(duration: Duration(milliseconds: 300)),
             evictErrorTileStrategy: EvictErrorTileStrategy.notVisible,
           ),
+
+          // 🟢 Layer 2: 高德透明路网 (style=8)
           TileLayer(
             urlTemplate: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}',
             subdomains: const ['1', '2', '3', '4'],
@@ -410,9 +378,11 @@ class _TripMapViewState extends State<TripMapView>
             tileSize: 256,
             evictErrorTileStrategy: EvictErrorTileStrategy.notVisible,
           ),
+
           PolylineLayer(
             polylines: _buildPolylines(),
           ),
+
           MarkerLayer(
             markers: widget.events
                 .map((e) {
@@ -450,6 +420,7 @@ class _TripMapViewState extends State<TripMapView>
                 .whereType<Marker>()
                 .toList(),
           ),
+
           if (widget.trajectory.isNotEmpty)
             MarkerLayer(
               markers: [
@@ -555,7 +526,9 @@ class _CurrentLocationMarkerState extends State<_CurrentLocationMarker>
 
   @override
   Widget build(BuildContext context) {
+    // 🟢 FSD Blue Color
     const color = Color(0xFF40C4FF);
+
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, child) {
