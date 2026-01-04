@@ -31,10 +31,14 @@ class RecordingScreen extends ConsumerStatefulWidget {
 }
 
 class _RecordingScreenState extends ConsumerState<RecordingScreen> {
-  // 默认展开仪表盘
+  // 默认展开，展示丰富的仪表盘
   bool _isStatsExpanded = true; 
   final MapController _mapController = MapController();
   int _lastEventCount = 0;
+  
+  // 地图交互控制
+  bool _isUserInteracting = false;
+  Timer? _interactionTimer;
 
   @override
   void initState() {
@@ -43,8 +47,16 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
       if (mounted) UpdateService.checkUpdate(context);
     });
   }
+  
+  void _onMapInteraction() {
+    setState(() => _isUserInteracting = true);
+    _interactionTimer?.cancel();
+    _interactionTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _isUserInteracting = false);
+    });
+  }
 
-  // 🟢 事件提醒弹窗 (HUD Notification)
+  // 🟢 优雅的事件提醒弹窗 (HUD Notification)
   void _showEventNotification(BuildContext context, RecordedEvent event) {
     Color color;
     IconData icon;
@@ -147,9 +159,8 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
     final isCalibrating = recordingState.isCalibrating;
     final i18n = ref.watch(i18nProvider);
 
-    // 🟢 最终修正：地图随动旋转逻辑 (Course Up)
     ref.listen(recordingProvider, (prev, next) {
-      // 1. 事件弹窗逻辑 (保持不变)
+      // 1. 弹窗监听
       if (next.events.length > _lastEventCount) {
         _lastEventCount = next.events.length;
         if (next.isRecording && next.events.isNotEmpty) {
@@ -157,20 +168,20 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
         }
       }
       
-      // 2. 地图旋转逻辑 (修复了无限旋转 Bug)
+      // 🟢 2. 地图随动旋转逻辑 (Course Up)
+      if (_isUserInteracting) return; // 如果用户正在操作，暂不自动旋转
+
       final pos = next.currentPosition;
       if (pos != null) {
         final speedKmh = pos.speed * 3.6;
-        
         double targetRotation;
 
-        // 只有速度大于 10km/h 时，才强制改变地图方向
-        if (speedKmh > 10.0) {
+        // 只有速度大于 3km/h 时，才强制改变地图方向 (防抖)
+        if (speedKmh > 3.0) {
            // 行驶中：让地图逆时针旋转，实现"车头朝上"
            targetRotation = -pos.heading;
         } else {
            // 静止/蠕行时：锁定当前地图角度，绝对不许动！
-           // ⚠️ 关键点：这里直接取 current rotation，不要加负号，否则会左右横跳
            targetRotation = _mapController.camera.rotation;
         }
         
@@ -188,20 +199,42 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
         resizeToAvoidBottomInset: false,
         body: Stack(
           children: [
+            // 🟢 底层全屏地图 (带交互监听)
             Positioned.fill(
-              child: TripMapView(
-                trajectory: recordingState.trajectory,
-                events: recordingState.events,
-                currentPosition: recordingState.currentPosition,
-                mapController: _mapController,
+              child: Listener(
+                onPointerDown: (_) => _onMapInteraction(),
+                onPointerMove: (_) => _onMapInteraction(),
+                child: TripMapView(
+                  trajectory: recordingState.trajectory,
+                  events: recordingState.events,
+                  currentPosition: recordingState.currentPosition,
+                  mapController: _mapController,
+                ),
               ),
             ),
+            
+            // 恢复跟随按钮
+            if (_isUserInteracting)
+              Positioned(
+                bottom: 160,
+                right: 16,
+                child: FloatingActionButton.small(
+                  backgroundColor: Colors.white,
+                  child: const Icon(Icons.gps_fixed, color: Colors.blue),
+                  onPressed: () {
+                    setState(() => _isUserInteracting = false);
+                    _interactionTimer?.cancel();
+                  },
+                ),
+              ),
 
+            // 交互层
             SafeArea(
               child: Column(
                 children: [
                   _buildTopBar(context, i18n, recordingState),
                   
+                  // Pro 仪表盘
                   AnimatedCrossFade(
                     firstChild: const SizedBox(width: double.infinity), 
                     secondChild: Padding(
@@ -226,6 +259,7 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
     );
   }
 
+  // 顶部栏
   Widget _buildTopBar(BuildContext context, dynamic i18n, RecordingState state) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -493,7 +527,6 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
   Widget _buildBottomControls(BuildContext context, WidgetRef ref,
       RecordingState state, dynamic i18n) {
     final isRecording = state.isRecording;
-    final currentSpeedKmh = (state.currentPosition?.speed ?? 0.0) * 3.6;
     
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
