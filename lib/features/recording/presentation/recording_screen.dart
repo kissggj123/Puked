@@ -185,8 +185,9 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
         
         // 🟢 强制移动地图中心
         // 之前可能因为速度为0不触发，现在只要有位置更新就触发居中
+        final fixedPos = CoordConv.fix(pos.latitude, pos.longitude); // 转为火星坐标
         _mapController.moveAndRotate(
-          LatLng(pos.latitude, pos.longitude),
+          fixedPos, // 这样地图中心就和车标位置完全一致了
           17.0, // 锁定缩放，防止被误触改变
           targetRotation 
         );
