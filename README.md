@@ -5,56 +5,73 @@
 
 > 本项目为 **个人魔改版本**，包含针对本地使用与实验性的改动，可能与原仓库存在较大差异。
 
----
+## [2.3.3-canguroMIO] - 2026-01-13
 
-## [2.1.0-canguroMIO] - 2026-01-04
+### 📱 iOS Integration & System | iOS 深度集成
 
-### 🚀 Core Mechanics | 核心机制
+*   **Dynamic Island & Live Activities (灵动岛与实时活动)**
+    Deep integration with iOS native features to replace intrusive audio alerts.
+    *   **Real-time Telemetry**: Displays current speed and trip distance on the Lock Screen and Dynamic Island compact area.
+    *   **Visual Event Alerts**: Replaced legacy audio beeps with immersive Island expansions. Events like *Rapid Decel* or *Jerk* trigger immediate color-coded visual warnings (Red/Orange) on the Island, providing safer, glanceable feedback.
+    **灵动岛与实时活动深度集成**。
+    *   **实时遥测常驻**：在灵动岛和锁屏界面实时显示当前车速与行驶里程。
+    *   **可视化告警系统**：移除传统音效，启用灵动岛视觉强提醒。当检测到急刹或顿挫时，灵动岛会弹出对应颜色（红/橙）的警告动画，提供更安全、低干扰的驾驶反馈。
 
-*   **GPS + Inertial Fusion (Kalman Filter)**
-    Implemented a professional-grade **Physics-Enhanced PV Model** (Position-Velocity) Kalman Filter.
-    *   **Dead Reckoning**: Uses `speed` and `heading` from the A16 chip to predict trajectory during signal loss (tunnels).
-    *   **ZUPT (Zero Velocity Update)**: Forces position lock when speed < 0.4m/s, eliminating "ghost mileage" at red lights.
-    *   **Adaptive Noise**: Dynamically adjusts trust between GPS and Inertial sensors based on `speedAccuracy` (L5 GPS feature).
-    **引入专业级 GPS + 惯性导航融合算法 (卡尔曼滤波)**。
-    *   **航位推算**: 利用 A16 芯片的速度与航向数据，在信号丢失（如隧道）时惯性预测轨迹。
-    *   **零速修正 (ZUPT)**: 低速状态下强制锁定坐标，彻底消除红绿灯停车时的“幽灵里程”漂移。
-    *   **自适应抗噪**: 根据 L5 双频 GPS 的精度动态调整信任权重，拒绝信号飞点。
+### 🧠 Core Navigation & Fusion | 核心导航与融合
 
-*   **100Hz Sensor Engine (100Hz 传感器引擎)**
-    Upgraded `SensorEngine` sampling rate from 60Hz to **100Hz (10ms)** to fully utilize iPhone 14 Pro hardware.
-    *   Added **Median Filter (Window=9)** and **Noise Gate (0.03G)** to eliminate road vibration noise while capturing micro-jerks.
-    **传感器采样率提升至 100Hz (10ms)**，榨干 iPhone 14 Pro 性能。
-    *   增加 **中值滤波** 与 **噪音门限**，有效过滤路面碎石震动，同时精准捕捉微小顿挫。
+*   **Physics-Enhanced PV Model (物理增强型 PV 卡尔曼滤波)**
+    A completely rewritten navigation filter optimized for iPhone 14 Pro's dual-frequency GPS.
+    *   **NHC (Non-Holonomic Constraints)**: Enforces "no sideslip" physics, locking the velocity vector to the vehicle's heading to eliminate trajectory drift during turns.
+    *   **ZUPT (Zero Velocity Update)**: Detects stationary states (<0.4m/s) and locks coordinates to prevent "ghost mileage" and drift at red lights.
+    *   **Outlier Rejection**: Implements a 3-sigma statistical gate to reject "flying points" (>20m jumps) caused by multipath effects.
+    **重写物理增强型 PV 导航模型**。
+    *   **NHC (非完整性约束)**：引入车辆“不可横移”的物理约束，强制速度向量跟随车头，消除转弯时的轨迹漂移。
+    *   **ZUPT (零速修正)**：精准识别停车状态 (<0.4m/s) 并强制锁定坐标，彻底根除红绿灯时的“幽灵里程”。
+    *   **飞点剔除**：基于 3-Sigma 统计学门限，自动过滤因多路径效应导致的 GPS 瞬移（飞点）。
 
-### 🎨 UI/UX | 界面与体验
+*   **Course-Up Logic with Hysteresis (带迟滞的航向跟随)**
+    *   **Dynamic Rotation**: Map rotates to align with heading only when speed > 3km/h.
+    *   **Heading Hold**: Locks the map angle when moving slowly or stationary to prevent disorientation.
+    **带迟滞的航向跟随算法**。
+    *   **动态旋转**：仅在速度 > 3km/h 时启动地图旋转。
+    *   **航向锁**：低速蠕行或静止时自动锁定地图角度，防止因电子罗盘抖动导致的画面乱转。
 
-*   **"Course Up" Navigation Mode（车头朝上模式）**
-    Map now rotates smoothly to align with the vehicle's heading when speed > 3km/h. Locks rotation when stationary to prevent jitter.
-    **地图随动旋转**：行驶速度 > 3km/h 时地图自动旋转保持车头朝上（导航视角）；静止时锁定角度防止乱转。
+### 🛡️ Event Detection Engine | 事件检测引擎
 
-*   **Pro Telemetry Dashboard（专业遥测仪表盘）**
-    Redesigned the top HUD into a unified frosted-glass panel containing:
-    *   **G-Force Ball** with Compass Ring.
-    *   **Real-time G-Values** (Long/Lat/Vert) with progress bars and dynamic colors.
-    *   **Waveform Chart** (powered by `fl_chart`) visualizing 100Hz data.
-    *   **Precision Data**: Speed, Altitude, Heading, and 5-decimal Coordinates.
-    **重构 HUD 仪表盘**：采用磨砂玻璃拟态设计，整合 **G力球**、**实时三轴 G 值**、**100Hz 波形图** 以及 **精密经纬度/海拔** 数据。
+*   **Non-linear Z-Y Energy Inhibition (Z-Y 非线性能量互斥)**
+    Calculates vertical (Z-axis) vibration energy density over a 200ms window. If high-energy bumps (e.g., speed bumps) are detected, longitudinal (Y-axis) sensitivity is dynamically suppressed.
+    **Z-Y 非线性能量互斥**。实时计算 Z 轴在 200ms 窗口内的震动能量密度。当检测到减速带或井盖冲击时，呈非线性比例压制纵向灵敏度，完美过滤因颠簸导致的急刹车误报。
 
-*   **Floating Control Dock（悬浮控制台）**
-    Replaced bulky bottom buttons with a minimalist, horizontal scrolling **Neon-style Pill Dock**.
-    底部控制栏升级为 **霓虹风格胶囊悬浮坞**，支持横向滚动，视觉更通透。
+*   **Adaptive Physics Multiplier (自适应物理倍率)**
+    Dynamic thresholding based on real-time speed:
+    *   **Low Speed (<15km/h)**: +50% threshold to prevent "nodding" false positives.
+    *   **High Speed (>80km/h)**: -20% threshold to increase sensitivity for high-speed maneuvers.
+    **自适应物理倍率**。
+    *   **低速保护**：低速下大幅提高触发门槛，防止起步/刹停时的“点头”动作误报。
+    *   **高速灵敏**：高速下降低门槛，确保危险驾驶行为被敏锐捕捉。
 
-*   **In-App Overlay Notifications（应用内胶囊通知）**
-    Replaced system dialogs with elegant top-screen overlay capsules for event triggers (e.g., Rapid Accel), auto-dismissing in 2.5s.
-    事件触发时不再弹出系统框，改为屏幕顶部优雅的 **胶囊浮窗提醒**，2.5秒后自动消失，不打断驾驶体验。
+### 📡 Signal Processing (DSP) | 信号处理
 
-### 🛠 Technical | 技术调整
+*   **100Hz Ultra-High Frequency (100Hz 极速采样)**
+    Unlocks the full potential of the A16 Bionic chip by increasing sensor polling rate from 60Hz to **100Hz (10ms)**.
+    **100Hz 极速采样**。解锁 A16 芯片潜能，将传感器轮询率提升至 10ms/次，捕捉毫秒级动态。
 
-*   **Dependency Updates**
-    Added `fl_chart` for high-performance waveform rendering and `flutter_secure_storage` for persistent local data.
-    新增 `fl_chart` 用于高性能图表渲染；引入 `flutter_secure_storage` 增强本地数据持久化。
+*   **VPAS (Virtual Phone Alignment System) (虚拟坐标对齐系统)**
+    *   **Auto-Leveling**: Continuously tracks gravity vectors to build a rotation matrix, mathematically correcting the phone's mounting angle (Pitch/Roll).
+    *   **Yaw Correction**: Learns the vehicle's forward direction during acceleration events to correct the phone's heading (Yaw) deviation.
+    **VPAS 虚拟坐标对齐**。
+    *   **自动调平**：实时追踪重力矢量构建旋转矩阵，在数学层面消除手机摆放角度（俯仰/横滚）的偏差。
+    *   **偏航修正**：通过捕捉起步时的纵向加速度，自动学习并修正手机相对于车头的偏航角（Yaw）。
 
-*   **Code Architecture**
-    Decoupled UI rendering (RecordingScreen) from algorithm logic (RecordingProvider), ensuring 120Hz UI smoothness even with heavy math calculations.
-    **架构解耦**：将 UI 渲染与算法逻辑分离，确保在进行高频卡尔曼滤波计算时，UI 依然保持 120Hz 满帧运行。
+*   **Dual-Track Filtering Architecture (双轨滤波架构)**
+    *   **UI Track**: Optimized for fluidity (`alpha=0.05`), ensuring the G-Ball animation is buttery smooth on ProMotion displays.
+    *   **Logic Track**: Optimized for signal purity (`alpha=0.02` + Noise Gate), feeding noise-free data to the detection algorithm.
+    **双轨滤波架构**。
+    *   **UI 轨**：注重视觉流畅性，适配 ProMotion 高刷屏。
+    *   **逻辑轨**：集成 **噪音门限 (Noise Gate)** 和强力低通滤波，为算法提供纯净数据。
+
+### ⚙️ Data Engineering | 数据工程
+
+*   **Smart Downsampling (智能降采样)**
+    Decimates 100Hz raw data to **20Hz** for database storage, preserving waveform peaks while reducing storage usage by 80%.
+    **智能降采样**。在入库存储时将 100Hz 原始数据降频至 **20Hz**，在保留波形峰值特征的同时节省 80% 存储空间。
