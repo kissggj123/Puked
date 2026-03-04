@@ -11,8 +11,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
   cupertino_icons: ^1.0.6
-  image_cropper: ^11.0.0
-  
+
   # State Management
   flutter_riverpod: ^2.4.9
   
