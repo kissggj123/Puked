@@ -1,17 +1,36 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:puked/common/widgets/g_force_ball.dart';
-import 'package:puked/common/widgets/sensor_waveform.dart';
+import 'package:puked/common/config/constants.dart';
 import 'package:puked/common/widgets/trip_map_view.dart';
-import 'package:puked/features/history/presentation/history_screen.dart';
+import 'package:puked/common/widgets/camera_preview_widget.dart';
 import 'package:puked/features/recording/providers/recording_provider.dart';
+import 'package:puked/features/recording/providers/voice_recording_provider.dart';
+import 'package:puked/features/settings/providers/settings_provider.dart';
+import 'package:puked/features/recording/presentation/widgets/gps_status_tag.dart';
+import 'package:puked/features/recording/presentation/widgets/algorithm_toggle.dart';
+import 'package:puked/features/recording/presentation/widgets/stats_capsule.dart';
+import 'package:puked/features/recording/presentation/widgets/manual_action_row.dart';
+import 'package:puked/features/recording/presentation/widgets/main_action_button.dart';
+import 'package:puked/features/recording/presentation/widgets/voice_recording_overlay.dart';
+import 'package:puked/features/recording/presentation/widgets/calibration_overlay.dart';
+import 'package:puked/features/recording/presentation/widgets/voice_tutorial_overlay.dart';
+import 'package:puked/features/recording/presentation/widgets/tag_button.dart';
+import 'package:puked/features/recording/presentation/widgets/recording_stat.dart';
+import 'package:puked/features/recording/presentation/widgets/event_history_popup.dart';
+import 'package:puked/features/recording/presentation/widgets/focused_sensor_content.dart';
+import 'package:puked/common/config/enums.dart';
 import 'package:puked/features/settings/presentation/settings_screen.dart';
+import 'package:puked/features/history/presentation/history_screen.dart';
 import 'package:puked/features/recording/presentation/vehicle_info_screen.dart';
+import 'package:puked/common/widgets/g_force_ball.dart';
 import 'package:puked/common/utils/i18n.dart';
-import 'package:puked/models/trip_event.dart';
+import 'package:puked/generated/l10n/app_localizations.dart';
+import 'package:puked/models/db_models.dart';
 import 'package:puked/services/update_service.dart';
-import 'dart:collection';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:ui';
+import 'dart:async';
 
 class RecordingScreen extends ConsumerStatefulWidget {
   const RecordingScreen({super.key});
@@ -22,11 +41,13 @@ class RecordingScreen extends ConsumerStatefulWidget {
 
 class _RecordingScreenState extends ConsumerState<RecordingScreen> {
   bool _isSensorFocused = false;
+  bool _showEventPopup = false;
+  bool _showVoiceTutorial = false;
+  Timer? _popupTimer;
 
   @override
   void initState() {
     super.initState();
-    // 启动时检查更新：延迟3秒，确保进入首页后环境已完全准备好
     Future.delayed(const Duration(seconds: 3), () {
       if (mounted && Theme.of(context).platform == TargetPlatform.android) {
         UpdateService.checkUpdate(context);
@@ -37,246 +58,441 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
   @override
   Widget build(BuildContext context) {
     final recordingState = ref.watch(recordingProvider);
+    final voiceState = ref.watch(voiceRecordingProvider);
     final isCalibrating = recordingState.isCalibrating;
-    final i18n = ref.watch(i18nProvider);
 
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: Theme.of(context).brightness == Brightness.dark
-          ? SystemUiOverlayStyle.light
-          : SystemUiOverlayStyle.dark,
-      child: Scaffold(
-        resizeToAvoidBottomInset: false, // 防止键盘弹出引起布局变化
-        body: Stack(
-          children: [
-            // 基础布局层
-            OrientationBuilder(
-              builder: (context, orientation) {
-                if (orientation == Orientation.portrait) {
-                  return SafeArea(
-                    child: _buildPortraitLayout(
-                        context, ref, recordingState, i18n),
-                  );
-                } else {
-                  // 横屏下自定义 SafeArea 处理，保证全屏地图感
-                  return _buildLandscapeLayout(
-                      context, ref, recordingState, i18n);
-                }
-              },
+    final double topPadding = MediaQuery.of(context).padding.top;
+    final double bottomPadding = MediaQuery.of(context).padding.bottom;
+
+    double topOverlay = topPadding + 8 + 40;
+    if (recordingState.isRecording) topOverlay += 8 + 40;
+
+    double bottomOverlay =
+        bottomPadding + 12 + 56 + 12 + (_isSensorFocused ? 420 : 130);
+    if (recordingState.isRecording) bottomOverlay += 12 + 85;
+
+    final Offset centerOffset = Offset(0, (topOverlay - bottomOverlay) / 2);
+
+    ref.listen<String?>(
+      recordingProvider.select((s) => s.alertMessage),
+      (previous, next) {
+        if (next != null && next.isNotEmpty) {
+          final l10n = AppLocalizations.of(context)!;
+          final i18n = I18n(l10n);
+
+          debugPrint('[Recording] Received alert message: $next');
+
+          // 清理错误key：移除可能存在的 "Exception: " 前缀（防御性编程）
+          String cleanKey = next.trim();
+          if (cleanKey.toLowerCase().startsWith('exception:')) {
+            cleanKey = cleanKey.substring(cleanKey.indexOf(':') + 1).trim();
+            debugPrint('[Recording] Cleaned to: $cleanKey');
+          }
+
+          // 根据错误key翻译成对应语言的错误消息
+          String errorMessage;
+          try {
+            errorMessage = i18n.t(cleanKey);
+            debugPrint('[Recording] Translated message: $errorMessage');
+
+            // 如果翻译返回的还是原始key，说明没有找到翻译
+            if (errorMessage == cleanKey) {
+              debugPrint(
+                  '[Recording] Translation returned same key, using fallback');
+              // 使用通用错误描述
+              errorMessage = l10n.calibration_failed_desc;
+            }
+          } catch (e) {
+            // 如果翻译失败，使用通用错误描述
+            debugPrint(
+                '[Recording] Translation error for key: $cleanKey, error: $e');
+            errorMessage = l10n.calibration_failed_desc;
+          }
+
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => AlertDialog(
+              title: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.red),
+                  const SizedBox(width: 8),
+                  Text(l10n.calibration_failed),
+                ],
+              ),
+              content: Text(errorMessage),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    ref.read(recordingProvider.notifier).clearAlert();
+                    Navigator.pop(context);
+                  },
+                  child: Text(l10n.ok),
+                ),
+              ],
             ),
-
-            // 校准遮罩层
-            if (isCalibrating) _buildCalibrationOverlay(context, i18n),
-          ],
-        ),
-      ),
+          );
+        }
+      },
     );
-  }
 
-  Widget _buildPortraitLayout(BuildContext context, WidgetRef ref,
-      RecordingState recordingState, dynamic i18n) {
-    final isRecording = recordingState.isRecording;
-    final isCalibrating = recordingState.isCalibrating;
-    const double spacing = 16.0;
-    const double smallCardHeight = 140.0;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        children: [
-          _buildHeader(context, i18n),
-          const SizedBox(height: 8), // 统一标题和卡片间距
-          Expanded(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 600),
-              switchInCurve: Curves.easeOutBack,
-              switchOutCurve: Curves.easeIn,
-              transitionBuilder: (Widget child, Animation<double> animation) {
-                return FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0, 0.05),
-                      end: Offset.zero,
-                    ).animate(animation),
-                    child: ScaleTransition(
-                      scale: Tween<double>(begin: 0.95, end: 1.0)
-                          .animate(animation),
-                      child: child,
-                    ),
-                  ),
-                );
-              },
-              child: _isSensorFocused
-                  ? Column(
-                      key: const ValueKey('sensor_focused'),
-                      children: [
-                        // 1. 传感器展示区 (大)
-                        Expanded(
-                          child: _buildFocusedSensorContent(context, i18n,
-                              noMargin: true),
-                        ),
-                        const SizedBox(height: spacing),
-                        // 2. 地图缩小 (小)
-                        GestureDetector(
-                          key: const ValueKey('map_small'),
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => setState(() => _isSensorFocused = false),
-                          child: SizedBox(
-                            height: smallCardHeight,
+    return Stack(
+      children: [
+        AnnotatedRegion<SystemUiOverlayStyle>(
+          value: SystemUiOverlayStyle.light,
+          child: Scaffold(
+            resizeToAvoidBottomInset: false,
+            backgroundColor: Colors.black,
+            body: Stack(
+              children: [
+                OrientationBuilder(
+                  builder: (context, orientation) {
+                    if (orientation == Orientation.portrait) {
+                      return Stack(
+                        children: [
+                          Positioned.fill(
                             child: _buildMapSection(recordingState,
-                                isLandscape: false, noMargin: true),
+                                isLandscape: false,
+                                noMargin: true,
+                                isBackground: true,
+                                centerOffset: centerOffset),
                           ),
-                        ),
-                        const SizedBox(height: spacing),
-                        _buildControlSection(context, ref, recordingState,
-                            isRecording, isCalibrating, i18n,
-                            noPadding: true),
-                      ],
-                    )
-                  : Column(
-                      key: const ValueKey('map_focused'),
-                      children: [
-                        // 1. 地图展示 (大)
-                        Expanded(
-                          child: _buildMapSection(recordingState,
-                              isLandscape: false, noMargin: true),
-                        ),
-                        const SizedBox(height: spacing),
-                        // 2. 传感器区域 (小)
-                        _buildSensorSection(context, i18n,
-                            height: smallCardHeight, noMargin: true),
-                        const SizedBox(height: spacing),
-                        _buildControlSection(context, ref, recordingState,
-                            isRecording, isCalibrating, i18n,
-                            noPadding: true),
-                      ],
-                    ),
+                          _buildTopShadow(),
+                          _buildPortraitLayout(context, ref, recordingState),
+                        ],
+                      );
+                    } else {
+                      return _buildLandscapeLayout(
+                          context, ref, recordingState);
+                    }
+                  },
+                ),
+                if (isCalibrating) const CalibrationOverlay(),
+                if (voiceState.isRecording)
+                  VoiceRecordingOverlay(state: voiceState),
+              ],
             ),
           ),
-          const SizedBox(height: spacing), // 底部留白
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFocusedSensorContent(BuildContext context, dynamic i18n,
-      {bool noMargin = false, bool isLandscape = false}) {
-    return GestureDetector(
-      key: ValueKey('focused_sensor_${isLandscape ? 'land' : 'port'}'),
-      behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _isSensorFocused = false),
-      child: Container(
-        margin: noMargin
-            ? EdgeInsets.zero
-            : const EdgeInsets.symmetric(horizontal: 16),
-        padding: EdgeInsets.all(isLandscape ? 12 : 16),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardTheme.color,
-          borderRadius: BorderRadius.circular(24),
-          border: null,
-          boxShadow: [
-            if (isLandscape)
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.15),
-                blurRadius: 20,
-                offset: const Offset(0, 10),
-              )
-          ],
         ),
-        child: Consumer(
-          builder: (context, ref, child) {
-            final sensorDataAsync = ref.watch(sensorStreamProvider);
-            return sensorDataAsync.maybeWhen(
-              data: (data) {
-                final gX = data.processedAccel.x / 9.80665;
-                final gY = data.processedAccel.y / 9.80665;
-                final gZ = (data.processedAccel.z - 9.80665) / 9.80665;
-
-                return Column(
-                  children: [
-                    // 第一行：球体 + 实时 XYZ 参数
-                    Row(
-                      children: [
-                        GForceBall(
-                          acceleration: data.processedAccel,
-                          gyroscope: data.gyroscope,
-                          size: isLandscape
-                              ? 56
-                              : 64, // 进一步缩小球体 (从 64/72 降到 56/64)
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              _buildGValueRow(
-                                  "X (LAT)", gX, const Color(0xFFE57373)),
-                              const SizedBox(height: 2),
-                              _buildGValueRow(
-                                  "Y (LONG)", gY, const Color(0xFF81C784)),
-                              const SizedBox(height: 2),
-                              _buildGValueRow(
-                                  "Z (VERT)", gZ, const Color(0xFF64B5F6)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: isLandscape ? 8 : 12),
-                    // 第二、三行：波形图
-                    Expanded(
-                      flex: 6, // 再次增加图表权重 (从 5 提升到 6)
-                      child: _SensorWaveformSection(
-                        data: data,
-                        i18n: i18n,
-                        showAxes: true,
-                        isLandscape: isLandscape,
-                      ),
-                    ),
-                  ],
-                );
-              },
-              orElse: () => const Center(child: CircularProgressIndicator()),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildGValueRow(String label, double value, Color color) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label,
-            style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: color.withValues(alpha: 0.7),
-                letterSpacing: 0.5)),
-        Text("${value >= 0 ? '+' : ''}${value.toStringAsFixed(3)}G",
-            style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                fontFamily: 'monospace')),
+        if (_showVoiceTutorial)
+          VoiceTutorialOverlay(
+            onDismiss: () => setState(() => _showVoiceTutorial = false),
+          ),
       ],
     );
   }
 
-  Widget _buildLandscapeLayout(BuildContext context, WidgetRef ref,
-      RecordingState recordingState, dynamic i18n) {
-    final isRecording = recordingState.isRecording;
-    final isCalibrating = recordingState.isCalibrating;
-    const double spacing = 16.0;
+  Widget _buildTopShadow() {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 200,
+      child: IgnorePointer(
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.black.withValues(alpha: 0.5),
+                Colors.transparent,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
-    // 计算地图中心偏移量
+  Widget _buildPortraitLayout(
+      BuildContext context, WidgetRef ref, RecordingState recordingState) {
+    final isRecording = recordingState.isRecording;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Stack(
+                    alignment: Alignment.topCenter,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          GpsStatusTag(state: recordingState),
+                          AlgorithmToggle(
+                            onShowTutorial: () =>
+                                setState(() => _showVoiceTutorial = true),
+                          ),
+                        ],
+                      ),
+                      _buildLogo(context),
+                    ],
+                  ),
+                  if (isRecording) ...[
+                    const SizedBox(height: 8),
+                    StatsCapsule(
+                      onTap: () {
+                        setState(() {
+                          _showEventPopup = !_showEventPopup;
+                          if (_showEventPopup) _isSensorFocused = false;
+                        });
+                        _resetPopupTimer();
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (!_showEventPopup) const Spacer(),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 400),
+              layoutBuilder:
+                  (Widget? currentChild, List<Widget> previousChildren) {
+                return Stack(
+                  alignment: _showEventPopup
+                      ? Alignment.topCenter
+                      : Alignment.bottomCenter,
+                  children: <Widget>[
+                    ...previousChildren,
+                    if (currentChild != null) currentChild,
+                  ],
+                );
+              },
+              transitionBuilder: (Widget child, Animation<double> animation) {
+                return FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(
+                    alignment: _showEventPopup
+                        ? Alignment.topCenter
+                        : Alignment.bottomCenter,
+                    scale: Tween<double>(begin: 0.92, end: 1.0).animate(
+                      CurvedAnimation(
+                          parent: animation, curve: Curves.easeOutBack),
+                    ),
+                    child: child,
+                  ),
+                );
+              },
+              child: _showEventPopup
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.of(context).size.height * 0.4,
+                        ),
+                        child: EventHistoryPopup(
+                          onDismiss: () =>
+                              setState(() => _showEventPopup = false),
+                          onResetTimer: _resetPopupTimer,
+                        ),
+                      ),
+                    )
+                  : Container(
+                      key: ValueKey('sensor_container_${_isSensorFocused}'),
+                      height: _isSensorFocused ? 420 : 130,
+                      child: _isSensorFocused
+                          ? FocusedSensorContent(
+                              noMargin: true,
+                              onTap: () =>
+                                  setState(() => _isSensorFocused = false),
+                            )
+                          : _buildSensorSection(context,
+                              height: 130, noMargin: true),
+                    ),
+            ),
+            if (_showEventPopup) const Spacer(),
+            const SizedBox(height: 12),
+            if (isRecording) ...[
+              const ManualActionRow(),
+              const SizedBox(height: 12),
+            ],
+            const MainActionButton(),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLogo(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        'PUKED',
+        style: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 8.0,
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.3)
+              : Colors.black.withValues(alpha: 0.3),
+        ),
+      ),
+    );
+  }
+
+  void _resetPopupTimer() {
+    _popupTimer?.cancel();
+    _popupTimer = Timer(AppConstants.uiPopupDuration, () {
+      if (mounted) setState(() => _showEventPopup = false);
+    });
+  }
+
+  Widget _buildMapSection(RecordingState state,
+      {bool isLandscape = false,
+      bool noMargin = false,
+      bool isBackground = false,
+      Offset centerOffset = Offset.zero}) {
+    return LayoutBuilder(builder: (context, constraints) {
+      // 检查是否启用视频录制
+      final settings = ref.watch(settingsProvider);
+      final isVideoEnabled = settings.isVideoRecordingEnabled;
+
+      return Stack(
+        children: [
+          Container(
+            margin: (isLandscape || noMargin)
+                ? EdgeInsets.zero
+                : const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: isBackground
+                  ? Colors.black
+                  : Theme.of(context).cardTheme.color,
+              borderRadius: (isLandscape || isBackground)
+                  ? BorderRadius.zero
+                  : BorderRadius.circular(AppConstants.defaultBorderRadius),
+            ),
+            child: ClipRRect(
+              borderRadius: (isLandscape || isBackground)
+                  ? BorderRadius.zero
+                  : BorderRadius.circular(AppConstants.defaultBorderRadius),
+              child: Consumer(builder: (context, ref, child) {
+                final voiceState = ref.watch(voiceRecordingProvider);
+
+                // 如果启用视频录制，显示摄像头预览；否则显示地图
+                if (isVideoEnabled) {
+                  return CameraPreviewWidget(
+                    onLongPress: () {
+                      if (state.isRecording && voiceState.isEnabled) {
+                        ref
+                            .read(voiceRecordingProvider.notifier)
+                            .startRecording();
+                      }
+                    },
+                  );
+                } else {
+                  return TripMapView(
+                    trajectory: state.trajectory,
+                    events: state.events,
+                    currentPosition: state.currentPosition,
+                    centerOffset: centerOffset,
+                    onLongPress: () {
+                      if (state.isRecording && voiceState.isEnabled) {
+                        ref
+                            .read(voiceRecordingProvider.notifier)
+                            .startRecording();
+                      }
+                    },
+                  );
+                }
+              }),
+            ),
+          ),
+          if (!isBackground)
+            Positioned(
+              top: (isLandscape || noMargin) ? 12 : 16,
+              left: (isLandscape || noMargin) ? 12 : 16,
+              child: GpsStatusTag(state: state),
+            ),
+          if (!isBackground && !state.isCalibrating)
+            Positioned(
+              top: (isLandscape || noMargin) ? 12 : 16,
+              right: (isLandscape || noMargin) ? 12 : 16,
+              child: AlgorithmToggle(
+                onShowTutorial: () => setState(() => _showVoiceTutorial = true),
+              ),
+            ),
+        ],
+      );
+    });
+  }
+
+  Widget _buildSensorSection(BuildContext context,
+      {double height = 140, bool noMargin = false}) {
+    return GestureDetector(
+      key: const ValueKey('small_sensor_section'),
+      behavior: HitTestBehavior.opaque,
+      onTap: () => setState(() => _isSensorFocused = true),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppConstants.defaultBorderRadius),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(
+              sigmaX: AppConstants.glassBlurSigma,
+              sigmaY: AppConstants.glassBlurSigma),
+          child: Container(
+            height: height,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: (Theme.of(context).brightness == Brightness.dark
+                      ? Colors.black
+                      : Colors.white)
+                  .withValues(alpha: 0.5),
+              borderRadius:
+                  BorderRadius.circular(AppConstants.defaultBorderRadius),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.1), width: 0.5),
+            ),
+            child: Consumer(
+              builder: (context, ref, child) {
+                final sensorDataAsync = ref.watch(sensorStreamProvider);
+                final l10n = AppLocalizations.of(context)!;
+                return sensorDataAsync.maybeWhen(
+                  data: (data) => Row(
+                    children: [
+                      GForceBall(
+                        acceleration: data.processedAccel,
+                        gyroscope: data.gyroscope,
+                        size: height * 0.65,
+                      ),
+                      const SizedBox(width: 20),
+                      Expanded(
+                        child: SensorWaveformSection(
+                          data: data,
+                          l10n: l10n,
+                          showAxes: false,
+                        ),
+                      ),
+                    ],
+                  ),
+                  orElse: () =>
+                      const Center(child: CircularProgressIndicator()),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLandscapeLayout(
+      BuildContext context, WidgetRef ref, RecordingState recordingState) {
+    const double spacing = 16.0;
     final screenWidth = MediaQuery.sizeOf(context).width;
     const double mapShift = 168.0;
 
     return Stack(
       children: [
-        // 1. 背景地图层
         Positioned(
           left: -mapShift * 2,
           top: 0,
@@ -284,23 +500,18 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
           width: screenWidth + mapShift * 2,
           child: _buildMapSection(recordingState, isLandscape: true),
         ),
-
-        // 2. GPS 调试面板 (独立定位，不随地图移动)
         Positioned(
           top: 12,
           left: 12,
-          child: _buildGpsStatusTag(recordingState, i18n),
+          child: GpsStatusTag(state: recordingState),
         ),
-
-        // 3. 前台交互层
         SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(
-                spacing / 2, spacing, spacing, spacing), // 减少左侧边距一半
+                spacing / 2, spacing, spacing, spacing),
             child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch, // 让子组件垂直铺满
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // 左侧动态区域
                 Expanded(
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 600),
@@ -318,19 +529,21 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
                       );
                     },
                     child: _isSensorFocused
-                        ? _buildFocusedSensorContent(context, i18n,
-                            noMargin: true, isLandscape: true)
+                        ? FocusedSensorContent(
+                            noMargin: true,
+                            isLandscape: true,
+                            onTap: () =>
+                                setState(() => _isSensorFocused = false),
+                          )
                         : Align(
                             key: const ValueKey('landscape_hud_align'),
                             alignment: Alignment.bottomLeft,
-                            child: _buildLandscapeHUD(context, i18n),
+                            child: _buildLandscapeHUD(context),
                           ),
                   ),
                 ),
                 const SizedBox(width: spacing),
-                // 右侧面板
-                _buildLandscapeControlConsole(context, ref, recordingState,
-                    isRecording, isCalibrating, i18n),
+                _buildLandscapeControlConsole(context, ref, recordingState),
               ],
             ),
           ),
@@ -339,7 +552,7 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
     );
   }
 
-  Widget _buildLandscapeHUD(BuildContext context, dynamic i18n) {
+  Widget _buildLandscapeHUD(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return GestureDetector(
@@ -371,6 +584,7 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
         child: Consumer(
           builder: (context, ref, child) {
             final sensorDataAsync = ref.watch(sensorStreamProvider);
+            final l10n = AppLocalizations.of(context)!;
             return sensorDataAsync.maybeWhen(
               data: (data) => Row(
                 mainAxisSize: MainAxisSize.min,
@@ -384,8 +598,8 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
                   SizedBox(
                     width: 150,
                     height: 80,
-                    child: _SensorWaveformSection(
-                        data: data, i18n: i18n, isLandscape: true),
+                    child: SensorWaveformSection(
+                        data: data, l10n: l10n, isLandscape: true),
                   ),
                 ],
               ),
@@ -398,14 +612,11 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
   }
 
   Widget _buildLandscapeControlConsole(
-      BuildContext context,
-      WidgetRef ref,
-      RecordingState state,
-      bool isRecording,
-      bool isCalibrating,
-      dynamic i18n) {
+      BuildContext context, WidgetRef ref, RecordingState state) {
     final colorScheme = Theme.of(context).colorScheme;
     final onSurface = colorScheme.onSurface;
+    final isRecording = state.isRecording;
+    final l10n = AppLocalizations.of(context)!;
 
     return Container(
       width: 300,
@@ -421,9 +632,8 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
         ],
       ),
       child: Column(
-        mainAxisSize: MainAxisSize.max, // 改为 max 以填充高度
+        mainAxisSize: MainAxisSize.max,
         children: [
-          // 顶部工具栏
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -438,7 +648,7 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
               Text(
                 'PUKED',
                 style: TextStyle(
-                    fontSize: 12, // 缩小字体
+                    fontSize: 12,
                     letterSpacing: 1.2,
                     fontWeight: FontWeight.bold,
                     color: onSurface.withValues(alpha: 0.8)),
@@ -453,105 +663,11 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
               ),
             ],
           ),
-
-          const Divider(height: 16), // 从 24 降回 16，为按钮腾出空间
-
+          const Divider(height: 16),
           if (isRecording) ...[
-            // 统计数据
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-              decoration: BoxDecoration(
-                color:
-                    colorScheme.surfaceContainerHighest.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('distance'),
-                        value:
-                            "${(state.currentDistance / 1000).toStringAsFixed(2)} km",
-                        icon: Icons.straighten,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 16),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: isRecording
-                            ? i18n.t('realtime_g')
-                            : i18n.t('peak_g'),
-                        value:
-                            "${(isRecording ? state.currentGForce : state.maxGForce).toStringAsFixed(2)}G",
-                        icon: Icons.shutter_speed,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 16),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('neg_exp'),
-                        value: "${state.events.length}",
-                        icon: Icons.error_outline,
-                        compact: true),
-                  ),
-                ],
-              ),
-            ),
+            _buildLandscapeStats(state, l10n, colorScheme),
             const SizedBox(height: 12),
-
-            // 按钮区域
-            GridView.count(
-              padding: EdgeInsets.zero,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 2.6, // 从 2.2 调回 2.6，在高度和空间之间取得平衡
-              children: [
-                _TagButton(
-                  label: i18n.t('rapid_accel'),
-                  icon: Icons.speed,
-                  color: const Color(0xFFFF9500),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidAcceleration),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('rapid_decel'),
-                  icon: Icons.trending_down,
-                  color: const Color(0xFFFF3B30),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidDeceleration),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('bump'),
-                  icon: Icons.vibration,
-                  color: const Color(0xFF5856D6),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.bump),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('wobble'),
-                  icon: Icons.waves,
-                  color: const Color(0xFF007AFF),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.wobble),
-                  compact: true,
-                ),
-              ],
-            ),
+            _buildLandscapeActions(l10n),
           ] else
             Expanded(
               child: Center(
@@ -559,586 +675,116 @@ class _RecordingScreenState extends ConsumerState<RecordingScreen> {
                     size: 40, color: onSurface.withValues(alpha: 0.2)),
               ),
             ),
-
-          const Spacer(), // 无论是否录制，都使用 Spacer 将主按钮推至底部，确保位置绝对一致
-          _buildMainActionButton(
-              context, ref, state, isRecording, isCalibrating, i18n,
-              isLandscape: true),
+          const Spacer(),
+          const MainActionButton(isLandscape: true),
         ],
       ),
     );
   }
 
-  Widget _buildMainActionButton(BuildContext context, WidgetRef ref,
-      RecordingState state, bool isRecording, bool isCalibrating, dynamic i18n,
-      {bool isLandscape = false}) {
-    return SizedBox(
-      width: double.infinity,
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: isRecording
-              ? const Color(0xFFFF3B30)
-              : Theme.of(context).colorScheme.primary,
-          foregroundColor: Colors.white,
-          padding: EdgeInsets.symmetric(vertical: isLandscape ? 14 : 18),
-          elevation: 0,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        ),
-        onPressed: isCalibrating
-            ? null
-            : () async {
-                if (isRecording) {
-                  final tripId = state.currentTrip?.id;
-                  await ref.read(recordingProvider.notifier).stopRecording();
-                  if (tripId != null && context.mounted) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => VehicleInfoScreen(tripId: tripId),
-                      ),
-                    );
-                  }
-                } else {
-                  try {
-                    await ref.read(recordingProvider.notifier).startRecording();
-                  } catch (e) {
-                    if (context.mounted) {
-                      showDialog(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: Text(i18n.t('calibration_failed')),
-                          content: Text(i18n.t('calibration_failed_desc')),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: Text(i18n.t('ok')),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
-                  }
-                }
-              },
-        child: Text(
-          isRecording ? i18n.t('stop_trip') : i18n.t('start_trip'),
-          style: TextStyle(
-              fontSize: isLandscape ? 16 : 18, fontWeight: FontWeight.bold),
+  Widget _buildLandscapeStats(
+      RecordingState state, AppLocalizations l10n, ColorScheme colorScheme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: colorScheme.outlineVariant.withValues(alpha: 0.5),
         ),
       ),
-    );
-  }
-
-  Widget _buildHeader(BuildContext context, dynamic i18n) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 10, 0, 4), // 减小左侧边距，因为外层已有 Padding
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
-            child: Text(
-              i18n.t('app_name').toUpperCase(),
-              style: Theme.of(context).appBarTheme.titleTextStyle,
-            ),
+            child: RecordingStat(
+                label: l10n.speed,
+                value: l10n.speed_unit(
+                    (state.currentSpeed * AppConstants.msToKmh)
+                        .toStringAsFixed(0)),
+                icon: Icons.speed,
+                compact: true),
+          ),
+          _buildStatDivider(context),
+          Expanded(
+            child: RecordingStat(
+                label: l10n.distance,
+                value: l10n.distance_unit(
+                    (state.currentDistance / 1000).toStringAsFixed(2)),
+                icon: Icons.straighten,
+                compact: true),
+          ),
+          _buildStatDivider(context),
+          Expanded(
+            child: RecordingStat(
+                label: state.isRecording ? l10n.realtime_g : l10n.peak_g,
+                value: l10n.g_unit(
+                    (state.isRecording ? state.currentGForce : state.maxGForce)
+                        .toStringAsFixed(2)),
+                icon: Icons.shutter_speed,
+                compact: true),
+          ),
+          _buildStatDivider(context),
+          Expanded(
+            child: RecordingStat(
+                label: l10n.neg_exp,
+                value: "${state.events.length}",
+                icon: Icons.error_outline,
+                compact: true),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildMapSection(RecordingState state,
-      {bool isLandscape = false, bool noMargin = false}) {
-    return LayoutBuilder(builder: (context, constraints) {
-      return Stack(
-        children: [
-          Container(
-            margin: (isLandscape || noMargin)
-                ? EdgeInsets.zero
-                : const EdgeInsets.only(
-                    bottom: 12), // 移除左右 16px 边距，由父容器 Padding 统一控制
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardTheme.color,
-              borderRadius:
-                  isLandscape ? BorderRadius.zero : BorderRadius.circular(24),
-              border: null,
-            ),
-            child: ClipRRect(
-              borderRadius:
-                  isLandscape ? BorderRadius.zero : BorderRadius.circular(24),
-              child: TripMapView(
-                trajectory: state.trajectory,
-                events: state.events,
-                currentPosition: state.currentPosition,
-              ),
-            ),
-          ),
-          // 调试面板 (在横屏下更小)
-          Positioned(
-            top: (isLandscape || noMargin) ? 12 : 16,
-            left: (isLandscape || noMargin) ? 12 : 16, // 同步调整
-            child: Consumer(builder: (context, ref, child) {
-              final i18n = ref.watch(i18nProvider);
-              return _buildGpsStatusTag(state, i18n);
-            }),
-          ),
-          // 算法切换按钮 (右上角，缩小 75%)
-          if (!state.isCalibrating)
-            Positioned(
-              top: (isLandscape || noMargin) ? 12 : 16,
-              right: (isLandscape || noMargin) ? 12 : 16,
-              child: Transform.scale(
-                scale: 0.75,
-                alignment: Alignment.topRight,
-                child: Consumer(builder: (context, ref, child) {
-                  return ElevatedButton.icon(
-                    onPressed: () {
-                      final current = state.algorithmMode;
-                      final next = current == AlgorithmMode.standard
-                          ? AlgorithmMode.expert
-                          : AlgorithmMode.standard;
-                      ref
-                          .read(recordingProvider.notifier)
-                          .setAlgorithmMode(next);
-
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                              "算法已切换至: ${next == AlgorithmMode.standard ? '库 A (精简优化)' : '库 B (专家引擎)'}"),
-                          duration: const Duration(seconds: 1),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.psychology, size: 18),
-                    label: Text(
-                      state.algorithmMode == AlgorithmMode.standard
-                          ? "算法 A"
-                          : "算法 B",
-                      style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.bold),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor:
-                          state.algorithmMode == AlgorithmMode.standard
-                              ? Colors.blueGrey.withValues(alpha: 0.8)
-                              : Colors.deepPurple.withValues(alpha: 0.8),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 0,
-                    ),
-                  );
-                }),
-              ),
-            ),
-        ],
-      );
-    });
-  }
-
-  Widget _buildGpsStatusTag(RecordingState state, dynamic i18n) {
-    final position = state.currentPosition;
-    final accuracy = position?.accuracy ?? 999.0;
-
-    Color statusColor;
-    String statusText;
-
-    if (position == null) {
-      statusColor = Colors.grey;
-      statusText = i18n.t('gps_no_signal');
-    } else if (accuracy < 15) {
-      statusColor = const Color(0xFF4CD964); // iOS Green
-      statusText = i18n.t('gps_strong');
-    } else if (accuracy < 50) {
-      statusColor = const Color(0xFFFFCC00); // iOS Yellow
-      statusText = i18n.t('gps_fair');
-    } else {
-      statusColor = const Color(0xFFFF3B30); // iOS Red
-      statusText = i18n.t('gps_weak');
-    }
-
-    // 判断是否为 GPS 相关的 debug 信息
-    bool isGpsMessage = state.debugMessage.contains('GPS') ||
-        state.debugMessage.contains('Signal');
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.45),
-          borderRadius: BorderRadius.circular(8)),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(
-              color: statusColor,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: statusColor.withValues(alpha: 0.4),
-                  blurRadius: 4,
-                  spreadRadius: 1,
-                )
-              ],
-            ),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            isGpsMessage
-                ? "$statusText (${accuracy.toStringAsFixed(0)}m)"
-                : state.debugMessage,
-            style: const TextStyle(
-                color: Colors.white,
-                fontSize: 9,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.3),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSensorSection(BuildContext context, dynamic i18n,
-      {double height = 140, bool noMargin = false}) {
-    return GestureDetector(
-      key: const ValueKey('small_sensor_section'),
-      behavior: HitTestBehavior.opaque,
-      onTap: () {
-        setState(() {
-          _isSensorFocused = true;
-        });
-      },
-      child: Container(
-        height: height,
-        margin: noMargin ? EdgeInsets.zero : EdgeInsets.zero, // 统一移除内边距
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardTheme.color,
-          borderRadius: BorderRadius.circular(24),
-          border: null,
-        ),
-        child: Consumer(
-          builder: (context, ref, child) {
-            final sensorDataAsync = ref.watch(sensorStreamProvider);
-            return sensorDataAsync.maybeWhen(
-              data: (data) => Row(
-                children: [
-                  GForceBall(
-                    acceleration: data.processedAccel,
-                    gyroscope: data.gyroscope,
-                    size: height * 0.7, // 动态调整球体大小
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(
-                    child: _SensorWaveformSection(
-                      data: data,
-                      i18n: i18n,
-                      showAxes: false,
-                    ),
-                  ),
-                ],
-              ),
-              orElse: () => const Center(child: CircularProgressIndicator()),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildControlSection(BuildContext context, WidgetRef ref,
-      RecordingState state, bool isRecording, bool isCalibrating, dynamic i18n,
-      {bool noPadding = false}) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: noPadding ? 0 : 20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (isRecording) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
-              decoration: BoxDecoration(
-                color:
-                    colorScheme.surfaceContainerHighest.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(16), // 与主按钮圆角保持一致 (16)
-                border: Border.all(
-                  color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('distance'),
-                        value:
-                            "${(state.currentDistance / 1000).toStringAsFixed(2)} km",
-                        icon: Icons.straighten,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 24),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: isRecording
-                            ? i18n.t('realtime_g')
-                            : i18n.t('peak_g'),
-                        value:
-                            "${(isRecording ? state.currentGForce : state.maxGForce).toStringAsFixed(2)}G",
-                        icon: Icons.shutter_speed,
-                        compact: true),
-                  ),
-                  _buildStatDivider(colorScheme, height: 24),
-                  Expanded(
-                    child: _RecordingStat(
-                        label: i18n.t('neg_exp'),
-                        value: "${state.events.length}",
-                        icon: Icons.error_outline,
-                        compact: true),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            // 竖屏下使用更紧凑的 Grid
-            GridView.count(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 2.8,
-              children: [
-                _TagButton(
-                  label: i18n.t('rapid_accel'),
-                  icon: Icons.speed,
-                  color: const Color(0xFFFF9500),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidAcceleration),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('rapid_decel'),
-                  icon: Icons.trending_down,
-                  color: const Color(0xFFFF3B30),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.rapidDeceleration),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('bump'),
-                  icon: Icons.vibration,
-                  color: const Color(0xFF5856D6),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.bump),
-                  compact: true,
-                ),
-                _TagButton(
-                  label: i18n.t('wobble'),
-                  icon: Icons.waves,
-                  color: const Color(0xFF007AFF),
-                  onPressed: () => ref
-                      .read(recordingProvider.notifier)
-                      .tagEvent(EventType.wobble),
-                  compact: true,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-          ],
-          _buildMainActionButton(
-              context, ref, state, isRecording, isCalibrating, i18n),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatDivider(ColorScheme colorScheme, {double height = 24}) {
-    return Container(
-      width: 1,
-      height: height,
-      color: colorScheme.outlineVariant.withValues(alpha: 0.3),
-    );
-  }
-
-  Widget _buildCalibrationOverlay(BuildContext context, dynamic i18n) {
-    return Container(
-      color: Colors.black.withValues(alpha: 0.85),
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(
-                color: Theme.of(context).colorScheme.primary),
-            const SizedBox(height: 24),
-            Text(i18n.t('calibrating'),
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text(i18n.t('calibration_tip'),
-                style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.6), fontSize: 14)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// 内部私有组件：波形图部分，独立管理历史记录以避免主页面刷新
-class _SensorWaveformSection extends StatefulWidget {
-  final dynamic data;
-  final dynamic i18n;
-  final bool isLandscape;
-  final bool showAxes;
-  const _SensorWaveformSection({
-    required this.data,
-    required this.i18n,
-    this.isLandscape = false,
-    this.showAxes = false,
-  });
-
-  @override
-  State<_SensorWaveformSection> createState() => _SensorWaveformSectionState();
-}
-
-class _SensorWaveformSectionState extends State<_SensorWaveformSection> {
-  final ListQueue<double> _accelXHistory = ListQueue<double>();
-  final ListQueue<double> _accelYHistory = ListQueue<double>();
-
-  @override
-  void didUpdateWidget(_SensorWaveformSection oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (_accelXHistory.length >= 100) _accelXHistory.removeFirst();
-    if (_accelYHistory.length >= 100) _accelYHistory.removeFirst();
-    _accelXHistory.add(widget.data.processedAccel.x / 9.80665); // 转换为 G
-    _accelYHistory.add(widget.data.processedAccel.y / 9.80665); // 转换为 G
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
+  Widget _buildLandscapeActions(AppLocalizations l10n) {
+    return GridView.count(
+      padding: EdgeInsets.zero,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisCount: 3,
+      mainAxisSpacing: 8,
+      crossAxisSpacing: 8,
+      childAspectRatio: 2.0,
       children: [
-        Expanded(
-          child: SensorWaveform(
-            data: _accelYHistory.toList(),
-            color: Theme.of(context).colorScheme.primary,
-            label: widget.isLandscape ? '' : widget.i18n.t('longitudinal'),
-            limit: 1.5, // G力视图通常在 1.5G 范围内
-            showAxes: widget.showAxes,
-          ),
+        TagButton(
+          label: l10n.jerk,
+          icon: Icons.bolt_rounded,
+          color: const Color(0xFF5856D6),
+          onPressed: () =>
+              ref.read(recordingProvider.notifier).tagEvent(EventType.jerk),
+          compact: true,
         ),
-        SizedBox(height: widget.showAxes ? 16 : 8),
-        Expanded(
-          child: SensorWaveform(
-            data: _accelXHistory.toList(),
-            color: Theme.of(context).colorScheme.secondary,
-            label: widget.isLandscape ? '' : widget.i18n.t('lateral'),
-            limit: 1.5,
-            showAxes: widget.showAxes,
-          ),
+        TagButton(
+          label: l10n.bump,
+          icon: Icons.vibration,
+          color: const Color(0xFF007AFF),
+          onPressed: () =>
+              ref.read(recordingProvider.notifier).tagEvent(EventType.bump),
+          compact: true,
+        ),
+        TagButton(
+          label: l10n.rapid_decel,
+          icon: Icons.trending_down,
+          color: const Color(0xFFFF3B30),
+          onPressed: () => ref
+              .read(recordingProvider.notifier)
+              .tagEvent(EventType.rapidDeceleration),
+          compact: true,
         ),
       ],
     );
   }
-}
 
-class _RecordingStat extends StatelessWidget {
-  final String label;
-  final String value;
-  final IconData icon;
-  final bool compact;
-  const _RecordingStat({
-    required this.label,
-    required this.value,
-    required this.icon,
-    this.compact = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Column(
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon,
-                size: compact ? 12 : 14,
-                color: colorScheme.primary), // 移除不必要的透明度，直接使用主色
-            const SizedBox(width: 4),
-            Text(value,
-                style: TextStyle(
-                    fontSize: compact ? 16 : 18,
-                    fontWeight: FontWeight.bold, // 增加字重
-                    color: colorScheme.onSurface)),
-          ],
-        ),
-        Text(label.toUpperCase(), // 统一使用大写并加亮
-            style: TextStyle(
-                fontSize: compact ? 10 : 11,
-                fontWeight: FontWeight.bold,
-                color: colorScheme.onSurfaceVariant)),
-      ],
-    );
-  }
-}
-
-class _TagButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final Color color;
-  final VoidCallback onPressed;
-  final bool compact;
-  const _TagButton({
-    required this.label,
-    required this.icon,
-    required this.color,
-    required this.onPressed,
-    this.compact = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: color.withValues(alpha: 0.1),
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          height: compact ? 44 : 54,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withValues(alpha: 0.2), width: 1),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: color, size: compact ? 18 : 22),
-              const SizedBox(width: 8),
-              Text(label,
-                  style: TextStyle(
-                      color: color,
-                      fontWeight: FontWeight.bold,
-                      fontSize: compact ? 13 : 15)),
-            ],
-          ),
-        ),
-      ),
+  Widget _buildStatDivider(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      width: 0.5,
+      height: 16,
+      color: isDark
+          ? Colors.white.withValues(alpha: 0.1)
+          : Colors.black.withValues(alpha: 0.1),
     );
   }
 }

@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:puked/models/db_models.dart';
+import 'package:puked/common/widgets/version_selection_dialog.dart';
 import 'package:puked/features/history/presentation/trip_detail_screen.dart';
 import 'package:puked/features/settings/providers/settings_provider.dart';
-import 'package:puked/common/utils/i18n.dart';
 import 'package:puked/services/storage/storage_service.dart';
 import 'package:puked/common/widgets/brand_selection.dart';
 import 'package:puked/features/recording/providers/vehicle_provider.dart';
@@ -13,6 +13,9 @@ import 'package:puked/features/auth/providers/auth_provider.dart';
 import 'package:puked/services/pocketbase_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:pocketbase/pocketbase.dart';
+import 'package:puked/generated/l10n/app_localizations.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:path/path.dart' as path;
 
 class VehicleInfoScreen extends ConsumerStatefulWidget {
   final int? tripId;
@@ -34,6 +37,8 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
   final TextEditingController _modelController = TextEditingController();
   final TextEditingController _versionController = TextEditingController();
   String? _selectedBrand;
+  String? _selectedBrandRef;
+  String? _selectedVersionRef;
   bool _isInitialized = false;
 
   // 图片相关状态
@@ -60,27 +65,62 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
   }
 
   Future<void> _loadInitialData() async {
-    final storage = ref.read(storageServiceProvider);
+    try {
+      final storage = ref.read(storageServiceProvider);
+      // 核心修复：确保 Isar 初始化完成后再查询
+      await storage.init();
 
-    if (widget.isSettingsMode) {
-      final settings = ref.read(settingsProvider);
-      _modelController.text = settings.carModel ?? '';
-      _versionController.text = settings.softwareVersion ?? '';
-      _selectedBrand = settings.brand;
-    } else if (widget.tripId != null) {
-      final trips = await storage.getAllTrips();
-      final trip = trips.firstWhere((t) => t.id == widget.tripId);
-      final settings = ref.read(settingsProvider);
+      debugPrint('🔍 [VehicleInfo] Loading initial data...');
+      debugPrint('   isSettingsMode: ${widget.isSettingsMode}');
+      debugPrint('   tripId: ${widget.tripId}');
 
-      _modelController.text = trip.carModel ?? settings.carModel ?? '';
-      _versionController.text =
-          trip.softwareVersion ?? settings.softwareVersion ?? '';
-      _selectedBrand = trip.brand ?? settings.brand;
+      if (widget.isSettingsMode) {
+        final settings = ref.read(settingsProvider);
+        _modelController.text = settings.carModel ?? '';
+        _versionController.text = settings.softwareVersion ?? '';
+        _selectedBrand = settings.brand;
+        _selectedBrandRef = settings.brandRef;
+        _selectedVersionRef = settings.softwareVersionRef;
+        debugPrint('   📝 From settings:');
+      } else if (widget.tripId != null) {
+        final trips = await storage.getAllTrips();
+        final trip = trips.firstWhere(
+          (t) => t.id == widget.tripId,
+          orElse: () => throw Exception('Trip not found'),
+        );
+        final settings = ref.read(settingsProvider);
+
+        _modelController.text = trip.carModel ?? settings.carModel ?? '';
+        _versionController.text =
+            trip.softwareVersion ?? settings.softwareVersion ?? '';
+        _selectedBrand = trip.brand ?? settings.brand;
+        _selectedBrandRef = trip.brand_ref ?? settings.brandRef;
+        _selectedVersionRef =
+            trip.software_version_ref ?? settings.softwareVersionRef;
+        debugPrint('   📝 From trip (fallback to settings):');
+        debugPrint('      trip.brand: ${trip.brand}');
+        debugPrint('      trip.brand_ref: ${trip.brand_ref}');
+        debugPrint('      settings.brand: ${settings.brand}');
+        debugPrint('      settings.brandRef: ${settings.brandRef}');
+      }
+
+      debugPrint('   ✅ Final values:');
+      debugPrint('      _selectedBrand: $_selectedBrand');
+      debugPrint('      _selectedBrandRef: $_selectedBrandRef');
+      debugPrint('      _selectedVersionRef: $_selectedVersionRef');
+      debugPrint('      _versionController.text: ${_versionController.text}');
+    } catch (e) {
+      debugPrint('[VehicleInfo] Error loading initial data: $e');
+      // 如果报错，尽量从 settings 恢复一些基础显示，而不是显示错误页
+      final settings = ref.read(settingsProvider);
+      _selectedBrand ??= settings.brand;
     }
 
-    setState(() {
-      _isInitialized = true;
-    });
+    if (mounted) {
+      setState(() {
+        _isInitialized = true;
+      });
+    }
   }
 
   // 选择图片
@@ -89,8 +129,9 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     final status = auth.user?.getStringValue('audit_status') ?? '';
     if (status == 'pending') return; // 认证中不允许操作
 
+    final l10n = AppLocalizations.of(context)!;
     if (_selectedImages.length >= 3) {
-      _showError(ref.read(i18nProvider).t('error_image_limit'));
+      _showError(l10n.error_image_limit);
       return;
     }
 
@@ -100,29 +141,105 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
 
     if (images.isEmpty) return;
 
-    final i18n = ref.read(i18nProvider);
     for (var image in images) {
       // 校验格式
       final ext = image.path.toLowerCase();
       if (!ext.endsWith('.jpg') &&
           !ext.endsWith('.jpeg') &&
           !ext.endsWith('.png')) {
-        _showError(i18n.t('error_image_type'));
+        _showError(l10n.error_image_type);
         continue;
       }
 
       // 校验大小 (5MB)
       final size = await image.length();
       if (size > 5 * 1024 * 1024) {
-        _showError(i18n.t('error_image_size'));
+        _showError(l10n.error_image_size);
         continue;
       }
 
       if (_selectedImages.length < 3) {
-        setState(() {
-          _selectedImages.add(image);
-        });
+        // 【核心优化】在添加到列表前先压缩图片
+        final compressedImage = await _compressImage(image);
+        if (compressedImage != null) {
+          setState(() {
+            _selectedImages.add(compressedImage);
+          });
+        }
       }
+    }
+  }
+
+  /// 图片压缩函数：长边2000px，短边自适应，保持原格式和文件名
+  Future<XFile?> _compressImage(XFile originalImage) async {
+    try {
+      final originalFile = File(originalImage.path);
+      final originalBytes = await originalFile.readAsBytes();
+
+      // 解码图片以获取原始尺寸
+      final decodedImage = await decodeImageFromList(originalBytes);
+      final originalWidth = decodedImage.width;
+      final originalHeight = decodedImage.height;
+
+      // 判断是否需要压缩
+      final longerSide =
+          originalWidth > originalHeight ? originalWidth : originalHeight;
+      if (longerSide <= 2000) {
+        // 尺寸已满足要求，仅做质量压缩
+        final ext = path.extension(originalImage.path).toLowerCase();
+        final isJpg = ext == '.jpg' || ext == '.jpeg';
+
+        final compressedBytes = await FlutterImageCompress.compressWithFile(
+          originalImage.path,
+          quality: isJpg ? 90 : 100, // JPG压缩90%，PNG保持100%
+        );
+
+        if (compressedBytes == null) return originalImage;
+
+        // 创建临时文件
+        final tempDir = Directory.systemTemp;
+        final fileName = path.basename(originalImage.path);
+        final compressedFile = File('${tempDir.path}/$fileName');
+        await compressedFile.writeAsBytes(compressedBytes);
+
+        return XFile(compressedFile.path);
+      }
+
+      // 计算目标尺寸（长边2000px，短边自适应）
+      int targetWidth, targetHeight;
+      if (originalWidth > originalHeight) {
+        targetWidth = 2000;
+        targetHeight = (originalHeight * 2000 / originalWidth).round();
+      } else {
+        targetHeight = 2000;
+        targetWidth = (originalWidth * 2000 / originalHeight).round();
+      }
+
+      // 执行压缩
+      final ext = path.extension(originalImage.path).toLowerCase();
+      final isJpg = ext == '.jpg' || ext == '.jpeg';
+
+      final compressedBytes = await FlutterImageCompress.compressWithFile(
+        originalImage.path,
+        minWidth: targetWidth,
+        minHeight: targetHeight,
+        quality: isJpg ? 90 : 100,
+      );
+
+      if (compressedBytes == null) return originalImage;
+
+      // 创建临时文件，保持原文件名
+      final tempDir = Directory.systemTemp;
+      final fileName = path.basename(originalImage.path);
+      final compressedFile = File('${tempDir.path}/$fileName');
+      await compressedFile.writeAsBytes(compressedBytes);
+
+      debugPrint(
+          '[VehicleInfo] 图片压缩成功: ${originalWidth}x${originalHeight} -> ${targetWidth}x${targetHeight}');
+      return XFile(compressedFile.path);
+    } catch (e) {
+      debugPrint('[VehicleInfo] 图片压缩失败: $e');
+      return originalImage; // 失败则返回原图
     }
   }
 
@@ -148,7 +265,9 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
   Future<void> _saveInfo(bool skip) async {
     // 即使点击跳过，也记录为 'Others'，避免 Arena 出现 unknown 数据
     final brand = skip ? 'Others' : _selectedBrand;
+    final brandRef = skip ? null : _selectedBrandRef;
     final version = skip ? 'Others' : _versionController.text.trim();
+    final versionRef = skip ? null : _selectedVersionRef;
     final model = skip ? 'Others' : _modelController.text.trim();
 
     if (!skip && brand != null && version.isNotEmpty) {
@@ -160,8 +279,10 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
       if (!skip) {
         await ref.read(settingsProvider.notifier).setVehicleInfo(
               brand: brand,
+              brandRef: brandRef,
               model: model,
               version: version,
+              versionRef: versionRef,
             );
       }
       if (mounted) Navigator.of(context).pop();
@@ -175,8 +296,10 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     await storage.updateTripVehicleInfo(
       widget.tripId!,
       brand: brand,
+      brandRef: brandRef,
       carModel: model,
       softwareVersion: version,
+      softwareVersionRef: versionRef,
     );
 
     if (mounted) {
@@ -202,15 +325,18 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     setState(() => _isSubmitting = true);
 
     try {
-      final i18n = ref.read(i18nProvider);
+      final l10n = AppLocalizations.of(context)!;
       final auth = ref.read(authProvider);
       final pb = ref.read(pbServiceProvider).pb;
 
       // 1. 准备上传到 PocketBase 的资料
       final Map<String, dynamic> body = {
-        'brand': _selectedBrand,
+        // 🔄 数据库迁移：优先使用 _ref 字段
+        'brand': '', // 清空旧字段
+        'brand_ref': _selectedBrandRef ?? '',
         'car_model': _modelController.text.trim(),
-        'software_version': _versionController.text.trim(),
+        'software_version': '', // 清空旧字段
+        'software_version_ref': _selectedVersionRef ?? '',
         'audit_status': 'pending', // 提交后重置状态为待审核
       };
 
@@ -233,8 +359,10 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
       // 4. 同步本地设置
       await ref.read(settingsProvider.notifier).setVehicleInfo(
             brand: _selectedBrand,
+            brandRef: _selectedBrandRef,
             model: _modelController.text.trim(),
             version: _versionController.text.trim(),
+            versionRef: _selectedVersionRef,
           );
 
       // 5. 刷新本地用户状态
@@ -243,21 +371,21 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(i18n.t('submit_success_tip')),
+            content: Text(l10n.submit_success_tip),
             backgroundColor: Colors.green,
           ),
         );
         Navigator.of(context).pop();
       }
     } catch (e) {
-      String errorMessage = 'Submit failed';
+      final l10n = AppLocalizations.of(context)!;
+      String errorMessage = l10n.upload_failed;
       if (e is ClientException) {
         final errorData = e.response['data'];
-        final i18n = ref.read(i18nProvider);
         if (errorData != null &&
             errorData is Map &&
             errorData.containsKey('certification_images')) {
-          errorMessage = i18n.t('error_image_size');
+          errorMessage = l10n.error_image_size;
         } else {
           errorMessage = e.response['message'] ?? e.toString();
         }
@@ -270,21 +398,32 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     }
   }
 
-  void _onBrandSelected(String? brandName) {
-    if (_selectedBrand == brandName) {
+  void _onBrandSelected(Brand brand) {
+    debugPrint('🏷️ [VehicleInfo] Brand selected:');
+    debugPrint('   brand.name: ${brand.name}');
+    debugPrint('   brand.cloudId: ${brand.cloudId}');
+
+    if (_selectedBrand == brand.name) {
       setState(() {
         _selectedBrand = null;
+        _selectedBrandRef = null;
+        _selectedVersionRef = null;
         _versionController.clear();
         _modelController.clear();
       });
+      debugPrint('   ❌ Brand deselected');
       return;
     }
 
     setState(() {
-      _selectedBrand = brandName;
+      _selectedBrand = brand.name;
+      _selectedBrandRef = brand.cloudId;
+      _selectedVersionRef = null;
       _versionController.clear();
       _modelController.clear();
     });
+    debugPrint('   ✅ _selectedBrand: $_selectedBrand');
+    debugPrint('   ✅ _selectedBrandRef: $_selectedBrandRef');
   }
 
   @override
@@ -294,66 +433,61 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     super.dispose();
   }
 
-  Widget _buildVersionField(BuildContext context, dynamic i18n,
+  Widget _buildVersionField(BuildContext context, AppLocalizations l10n,
       AsyncValue<List<SoftwareVersion>> presetVersionsAsync) {
     return presetVersionsAsync.when(
       data: (versions) {
-        final List<String> options =
-            versions.map((v) => v.versionString).toList();
-
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            return DropdownMenu<String>(
-              controller: _versionController,
-              initialSelection: _versionController.text.isNotEmpty
-                  ? _versionController.text
-                  : null,
-              width: constraints.maxWidth,
-              hintText: i18n.t('version_hint'),
-              label: Text(i18n.t('software_version'),
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
-              leadingIcon: const Icon(Icons.code),
-              enableSearch: true,
-              enableFilter: true,
-              requestFocusOnTap: true,
-              inputDecorationTheme: InputDecorationTheme(
-                border: const OutlineInputBorder(),
-                filled: false,
-                labelStyle: TextStyle(
-                  color: Theme.of(context).brightness == Brightness.dark
-                      ? Colors.white.withValues(alpha: 0.7)
-                      : Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              textStyle: TextStyle(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? Colors.white.withValues(alpha: 0.95)
-                    : Theme.of(context).colorScheme.onSurface,
-              ),
-              dropdownMenuEntries:
-                  options.map<DropdownMenuEntry<String>>((String version) {
-                return DropdownMenuEntry<String>(
-                  value: version,
-                  label: version,
-                  trailingIcon: const Icon(Icons.history, size: 16),
-                );
-              }).toList(),
-              onSelected: (String? selection) {
-                if (selection != null) {
-                  setState(() {
-                    _versionController.text = selection;
-                  });
-                }
-              },
-            );
-          },
+        return TextField(
+          controller: _versionController,
+          readOnly: true,
+          onTap: _selectedBrand == null
+              ? null
+              : () async {
+                  final result = await showDialog<dynamic>(
+                    context: context,
+                    builder: (context) => VersionSelectionDialog(
+                      currentVersion: _versionController.text,
+                      presetVersions: versions,
+                      brandName: _selectedBrand!,
+                    ),
+                  );
+                  if (result != null) {
+                    setState(() {
+                      if (result is SoftwareVersion) {
+                        _versionController.text = result.versionString;
+                        _selectedVersionRef = result.cloudId;
+                      } else if (result is String) {
+                        _versionController.text = result;
+                        _selectedVersionRef = null;
+                      }
+                    });
+                  }
+                },
+          style: TextStyle(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.white.withValues(alpha: 0.95)
+                : Theme.of(context).colorScheme.onSurface,
+          ),
+          decoration: InputDecoration(
+            labelText: l10n.software_version,
+            labelStyle: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? Colors.white.withValues(alpha: 0.7)
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            hintText: l10n.version_hint,
+            border: const OutlineInputBorder(),
+            prefixIcon: const Icon(Icons.code),
+            suffixIcon: const Icon(Icons.arrow_drop_down),
+          ),
         );
       },
       loading: () => const LinearProgressIndicator(),
       error: (e, s) => TextField(
         controller: _versionController,
         decoration: InputDecoration(
-          labelText: i18n.t('software_version'),
+          labelText: l10n.software_version,
           border: const OutlineInputBorder(),
           prefixIcon: const Icon(Icons.code),
         ),
@@ -363,25 +497,42 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final i18n = ref.watch(i18nProvider);
-    final brandsAsync = ref.watch(availableBrandsProvider);
+    final l10n = AppLocalizations.of(context)!;
+    final brandsAsync = ref.watch(allBrandsProvider);
 
     if (!_isInitialized) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return brandsAsync.when(
-      data: (brands) => _buildContent(context, i18n, brands),
+      data: (brands) => _buildContent(context, l10n, brands),
       loading: () =>
           const Scaffold(body: Center(child: CircularProgressIndicator())),
       error: (err, stack) => Scaffold(body: Center(child: Text('Error: $err'))),
     );
   }
 
-  Widget _buildContent(BuildContext context, dynamic i18n, List<Brand> brands) {
-    final presetVersionsAsync = _selectedBrand != null
-        ? ref.watch(presetVersionsProvider(_selectedBrand!))
+  Widget _buildContent(
+      BuildContext context, AppLocalizations l10n, List<Brand> brands) {
+    // ✅ 修复：使用 brandRef (cloudId) 而不是 brandName 查询版本列表
+    debugPrint('🔍 [VehicleInfo] _buildContent called:');
+    debugPrint('   _selectedBrandRef: $_selectedBrandRef');
+
+    final presetVersionsAsync = _selectedBrandRef != null
+        ? ref.watch(presetVersionsByRefProvider(_selectedBrandRef!))
         : const AsyncValue<List<SoftwareVersion>>.data([]);
+
+    // 打印版本列表加载状态
+    presetVersionsAsync.when(
+      data: (versions) {
+        debugPrint('   ✅ Versions loaded: ${versions.length} versions');
+        for (var v in versions) {
+          debugPrint('      - ${v.versionString} (cloudId: ${v.cloudId})');
+        }
+      },
+      loading: () => debugPrint('   ⏳ Loading versions...'),
+      error: (err, stack) => debugPrint('   ❌ Error loading versions: $err'),
+    );
 
     final auth = ref.watch(authProvider);
     final auditStatus = auth.user?.getStringValue('audit_status') ?? '';
@@ -391,7 +542,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          widget.isSettingsMode ? i18n.t('my_car') : i18n.t('vehicle_info'),
+          widget.isSettingsMode ? l10n.my_car : l10n.vehicle_info,
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
       ),
@@ -400,7 +551,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
           children: [
             // 1. 顶部 Banner (仅在设置模式显示)
             if (widget.isSettingsMode)
-              _buildCertificationBanner(context, i18n, auditStatus),
+              _buildCertificationBanner(context, l10n, auditStatus),
 
             Expanded(
               child: SingleChildScrollView(
@@ -411,8 +562,8 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
                     const SizedBox(height: 16),
                     BrandSelectionGrid(
                       brands: brands,
-                      selectedBrandName: _selectedBrand,
-                      onBrandSelected: (brand) => _onBrandSelected(brand.name),
+                      selectedBrandKey: _selectedBrandRef ?? _selectedBrand,
+                      onBrandSelected: _onBrandSelected,
                     ),
                     const SizedBox(height: 24),
                     TextField(
@@ -423,35 +574,35 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
                             : Theme.of(context).colorScheme.onSurface,
                       ),
                       decoration: InputDecoration(
-                        labelText: i18n.t('car_model'),
+                        labelText: l10n.car_model,
                         labelStyle: TextStyle(
                           fontWeight: FontWeight.bold,
                           color: isDark
                               ? Colors.white.withValues(alpha: 0.7)
                               : Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
-                        hintText: i18n.t('model_hint'),
+                        hintText: l10n.model_hint,
                         border: const OutlineInputBorder(),
                         prefixIcon: const Icon(Icons.directions_car),
                       ),
                     ),
                     const SizedBox(height: 16),
-                    _buildVersionField(context, i18n, presetVersionsAsync),
+                    _buildVersionField(context, l10n, presetVersionsAsync),
 
                     // 2. 图片上传区域 (仅在设置模式显示)
                     if (widget.isSettingsMode) ...[
                       const SizedBox(height: 32),
                       Text(
                         isPending
-                            ? i18n.t('upload_cert_photos_submitted')
-                            : i18n.t('upload_cert_photos_new'),
+                            ? l10n.upload_cert_photos_submitted
+                            : l10n.upload_cert_photos_new,
                         style: const TextStyle(
                             fontSize: 16, fontWeight: FontWeight.bold),
                       ),
                       if (!isPending) ...[
                         const SizedBox(height: 8),
                         Text(
-                          i18n.t('upload_hint_new'),
+                          l10n.upload_hint_new,
                           style: TextStyle(
                               fontSize: 12,
                               color: Theme.of(context)
@@ -533,7 +684,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
                       if (!isPending) ...[
                         const SizedBox(height: 8),
                         Text(
-                          i18n.t('file_limit_hint'),
+                          l10n.file_limit_hint,
                           style:
                               const TextStyle(fontSize: 10, color: Colors.grey),
                         ),
@@ -551,15 +702,15 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
           child: widget.isSettingsMode
-              ? _buildCertificationButton(context, i18n, isPending)
-              : _buildOriginalButtons(context, i18n),
+              ? _buildCertificationButton(context, l10n, isPending)
+              : _buildOriginalButtons(context, l10n),
         ),
       ),
     );
   }
 
   Widget _buildCertificationBanner(
-      BuildContext context, dynamic i18n, String status) {
+      BuildContext context, AppLocalizations l10n, String status) {
     Color bannerColor;
     String bannerText;
     IconData icon;
@@ -567,22 +718,22 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     switch (status) {
       case 'pending':
         bannerColor = Colors.orange;
-        bannerText = i18n.t('car_cert_banner_pending');
+        bannerText = l10n.car_cert_banner_pending;
         icon = Icons.hourglass_empty;
         break;
       case 'rejected':
         bannerColor = Colors.red;
-        bannerText = i18n.t('car_cert_banner_rejected');
+        bannerText = l10n.car_cert_banner_rejected;
         icon = Icons.error_outline;
         break;
       case 'approved':
         bannerColor = Colors.green;
-        bannerText = i18n.t('car_cert_banner_approved');
+        bannerText = l10n.car_cert_banner_approved;
         icon = Icons.verified;
         break;
       default:
         bannerColor = Theme.of(context).colorScheme.primary;
-        bannerText = i18n.t('car_cert_banner');
+        bannerText = l10n.car_cert_banner;
         icon = Icons.verified_user;
     }
 
@@ -610,7 +761,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
   }
 
   Widget _buildCertificationButton(
-      BuildContext context, dynamic i18n, bool isPending) {
+      BuildContext context, AppLocalizations l10n, bool isPending) {
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
@@ -636,7 +787,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
                 child: CircularProgressIndicator(
                     strokeWidth: 2, color: Colors.white))
             : Text(
-                i18n.t('submit_for_audit'),
+                l10n.submit_for_audit,
                 style:
                     const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
               ),
@@ -644,7 +795,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
     );
   }
 
-  Widget _buildOriginalButtons(BuildContext context, dynamic i18n) {
+  Widget _buildOriginalButtons(BuildContext context, AppLocalizations l10n) {
     return Row(
       children: [
         Expanded(
@@ -656,7 +807,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
                   borderRadius: BorderRadius.circular(18)),
             ),
             child: Text(
-              i18n.t('skip'),
+              l10n.skip,
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
           ),
@@ -674,7 +825,7 @@ class _VehicleInfoScreenState extends ConsumerState<VehicleInfoScreen> {
               elevation: 0,
             ),
             child: Text(
-              i18n.t('save'),
+              l10n.save,
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
           ),

@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:isar/isar.dart';
 
+// ignore: uri_does_not_exist
 part 'db_models.g.dart';
 
 @collection
@@ -15,126 +17,239 @@ class Trip {
   String? carModel;
   String? brand;
   String? softwareVersion;
+
+  String? brand_ref;
+  String? software_version_ref;
+
   String? appVersion;
   String? platform;
   String? algorithm;
   String? notes;
+  String? metricsJson;
 
-  // 云端关联 ID (PocketBase Record ID)
+  // 新增：支持旧代码中的 metrics 字段名（如果它是 metricsJson 的别名）
+  String? get metrics => metricsJson;
+  set metrics(String? value) => metricsJson = value;
+
+  // 新增：支持云端统计信息
+  String? cloudMetrics;
+
+  // 新增：本地事件统计缓存（JSON格式）
+  String? eventStatsJson;
+
+  @ignore
+  String? userName;
+  @ignore
+  String? userId;
+  @ignore
+  String? userAvatar;
+
   String? cloudId;
-
-  // 是否已上传
   bool isUploaded = false;
+  bool isLocalMissing = false;
 
-  // 轨迹点列表
   final trajectory = IsarLinks<TrajectoryPoint>();
-
-  // 关联的事件列表
   final events = IsarLinks<RecordedEvent>();
 
-  // 统计信息
-  int eventCount = 0;
   double distance = 0.0;
+  int eventCount = 0; // 自动事件数量（自动标记的负体验事件）
 
-  /// 检查行程数据是否充足
-  /// 1. 里程 >= 500m
-  /// 2. 时长 >= 120s (2分钟)
-  /// 3. 平均速度 >= 2.0 km/h
-  bool get isDataSufficient {
-    // 1. 距离检查
-    if (distance < 500) return false;
-
-    // 2. 时长检查
-    if (endTime == null) return true; // 如果还没结束，暂不判断时长（理论上上传前已结束）
-    final durationSeconds = endTime!.difference(startTime).inSeconds;
-    if (durationSeconds < 120) return false;
-
-    // 3. 平均车速检查 (km/h)
-    // 速度 = (距离/1000) / (时长/3600) = (距离 * 3.6) / 时长
-    final avgSpeedKmh = (distance * 3.6) / durationSeconds;
-    if (avgSpeedKmh < 2.0) return false;
-
-    return true;
+  // 辅助方法：解析事件统计
+  @ignore
+  Map<String, dynamic>? get eventStats {
+    if (eventStatsJson == null || eventStatsJson!.isEmpty) return null;
+    try {
+      return jsonDecode(eventStatsJson!) as Map<String, dynamic>;
+    } catch (e) {
+      return null;
+    }
   }
-}
 
-@collection
-class Brand {
-  Id id = Isar.autoIncrement;
+  // 业务逻辑辅助方法
+  bool get isDataSufficient => distance > 0.3; // 示例：大于 300 米认为数据充足
 
-  @Index(unique: true)
-  late String name; // 品牌标识，如 "Tesla"
+  // 获取显示用的公里数（优先使用云端metrics，回退到本地distance）
+  double get displayDistance {
+    // 1. 优先使用 cloudMetrics 中的 distance_km（最新的云端数据）
+    if (cloudMetrics != null && cloudMetrics!.isNotEmpty) {
+      try {
+        final metrics = jsonDecode(cloudMetrics!) as Map<String, dynamic>;
+        final distanceKm =
+            double.tryParse(metrics['distance_km']?.toString() ?? '0');
+        if (distanceKm != null && distanceKm > 0) {
+          return distanceKm;
+        }
+      } catch (e) {
+        // 解析失败，继续尝试其他来源
+      }
+    }
 
-  String? displayName; // 显示名称
-  String? logoUrl; // 远程 SVG 图标地址
+    // 2. 回退到 metricsJson 中的 distance_km（上传时服务器返回的）
+    if (metricsJson != null && metricsJson!.isNotEmpty) {
+      try {
+        final metrics = jsonDecode(metricsJson!) as Map<String, dynamic>;
+        final distanceKm =
+            double.tryParse(metrics['distance_km']?.toString() ?? '0');
+        if (distanceKm != null && distanceKm > 0) {
+          return distanceKm;
+        }
+      } catch (e) {
+        // 解析失败，继续尝试其他来源
+      }
+    }
 
-  int order = 0; // 排序权重
-  bool isEnabled = true; // 是否启用
-  bool isCustom = false; // 是否为自定义
+    // 3. 最后回退到本地计算的 distance（存储单位是米，需要转换为公里）
+    return distance / 1000;
+  }
 
-  DateTime? updatedAt; // 最后更新时间
+  String getDistanceDisplay() => "${displayDistance.toStringAsFixed(1)} km";
 
-  // 关联的版本
-  @Backlink(to: 'brand')
-  final versions = IsarLinks<SoftwareVersion>();
-}
+  String getAvgSpeedDisplay() {
+    // 1. 优先使用 cloudMetrics 中的 avg_speed_kmh
+    if (cloudMetrics != null && cloudMetrics!.isNotEmpty) {
+      try {
+        final metrics = jsonDecode(cloudMetrics!) as Map<String, dynamic>;
+        final avgSpeed = metrics['avg_speed_kmh'];
+        if (avgSpeed != null) {
+          final speed = double.tryParse(avgSpeed.toString());
+          if (speed != null && speed > 0) {
+            return "${speed.toStringAsFixed(1)} km/h";
+          }
+        }
+      } catch (e) {
+        // 解析失败，继续尝试其他来源
+      }
+    }
 
-@collection
-class SoftwareVersion {
-  Id id = Isar.autoIncrement;
+    // 2. 回退到 metricsJson 中的 avg_speed_kmh
+    if (metricsJson != null && metricsJson!.isNotEmpty) {
+      try {
+        final metrics = jsonDecode(metricsJson!) as Map<String, dynamic>;
+        final avgSpeed = metrics['avg_speed_kmh'];
+        if (avgSpeed != null) {
+          final speed = double.tryParse(avgSpeed.toString());
+          if (speed != null && speed > 0) {
+            return "${speed.toStringAsFixed(1)} km/h";
+          }
+        }
+      } catch (e) {
+        // 解析失败，继续尝试其他来源
+      }
+    }
 
-  @Index()
-  late String versionString; // 版本号，如 "v12.3.6"
+    // 3. 最后回退到基于 endTime 的本地计算
+    if (endTime == null) return "0 km/h";
+    final hours = endTime!.difference(startTime).inSeconds / 3600.0;
+    return hours > 0
+        ? "${(displayDistance / hours).toStringAsFixed(1)} km/h"
+        : "0 km/h";
+  }
 
-  final brand = IsarLink<Brand>(); // 属于哪个品牌
+  String getDurationDisplay() {
+    // 1. 优先使用 cloudMetrics 中的 duration_min
+    if (cloudMetrics != null && cloudMetrics!.isNotEmpty) {
+      try {
+        final metrics = jsonDecode(cloudMetrics!) as Map<String, dynamic>;
+        final durationMin = metrics['duration_min'];
+        if (durationMin != null) {
+          final duration = int.tryParse(durationMin.toString());
+          if (duration != null && duration > 0) {
+            return "$duration min";
+          }
+        }
+      } catch (e) {
+        // 解析失败，继续尝试其他来源
+      }
+    }
 
-  bool isEnabled = true;
-  bool isCustom = false;
+    // 2. 回退到 metricsJson 中的 duration_min
+    if (metricsJson != null && metricsJson!.isNotEmpty) {
+      try {
+        final metrics = jsonDecode(metricsJson!) as Map<String, dynamic>;
+        final durationMin = metrics['duration_min'];
+        if (durationMin != null) {
+          final duration = int.tryParse(durationMin.toString());
+          if (duration != null && duration > 0) {
+            return "$duration min";
+          }
+        }
+      } catch (e) {
+        // 解析失败，继续尝试其他来源
+      }
+    }
 
-  DateTime? updatedAt;
+    // 3. 最后回退到基于 endTime 的本地计算
+    if (endTime == null) return "0 min";
+    return "${endTime!.difference(startTime).inMinutes} min";
+  }
 }
 
 @collection
 class TrajectoryPoint {
   Id id = Isar.autoIncrement;
-
   late double lat;
   late double lng;
   late double altitude;
   late double speed;
   late DateTime timestamp;
-  bool? isLowConfidence; // 是否为弱信号点
+  bool isLowConfidence = false;
+
+  // 传感器同步记录（可选，用于数据导出）
+  double? ax, ay, az;
+  double? gx, gy, gz;
 }
 
 @collection
 class RecordedEvent {
   Id id = Isar.autoIncrement;
 
+  @Index(unique: true)
   late String uuid;
+
   late DateTime timestamp;
-  late String type; // rapidAcceleration, rapidDeceleration, etc.
-  late String source; // AUTO, MANUAL
-  String? notes; // 备注信息（如聚合特征）
+  late String type;
+  String? source;
+  double? speed;
+  double? gForce;
+  String? notes;
+  String? voiceText;
 
   double? lat;
   double? lng;
 
-  // 存储传感器波形片段，由于 Isar 不直接支持自定义对象列表的嵌套存储，
-  // 我们将传感器数据序列化为 JSON 字符串存储，或者使用嵌入式类。
-  // 为了性能，我们这里使用 List<SensorPointEmbedded>。
   late List<SensorPointEmbedded> sensorData;
 }
 
 @embedded
 class SensorPointEmbedded {
-  double? ax;
-  double? ay;
-  double? az;
-  double? gx;
-  double? gy;
-  double? gz;
-  double? mx;
-  double? my;
-  double? mz;
+  double? ax, ay, az;
+  double? gx, gy, gz;
+  double? mx, my, mz;
   int? offsetMs;
+}
+
+@collection
+class Brand {
+  Id id = Isar.autoIncrement;
+  late String name;
+  String? displayName;
+  String? logoUrl;
+  int order = 0;
+  bool isEnabled = true;
+  bool isCustom = false;
+  DateTime? updatedAt;
+  String? cloudId;
+
+  final versions = IsarLinks<SoftwareVersion>();
+}
+
+@collection
+class SoftwareVersion {
+  Id id = Isar.autoIncrement;
+  late String versionString;
+  bool isEnabled = true;
+  String? cloudId;
+  bool isCustom = false;
+
+  final brand = IsarLink<Brand>();
 }

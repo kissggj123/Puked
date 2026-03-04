@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:latlong2/latlong.dart' hide Path;
+import 'package:puked/generated/l10n/app_localizations.dart';
 import 'package:puked/common/widgets/trip_map_view.dart';
 import 'package:puked/models/db_models.dart';
 import 'package:puked/common/utils/i18n.dart';
@@ -15,6 +16,7 @@ import 'package:puked/services/export/export_service.dart';
 import 'package:puked/services/storage/storage_service.dart';
 import 'package:puked/services/cloud_trip_service.dart';
 import 'package:puked/features/auth/providers/auth_provider.dart';
+import 'package:puked/features/recording/providers/vehicle_provider.dart';
 import 'package:screenshot/screenshot.dart';
 import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -43,11 +45,27 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
   }
 
   Future<void> _loadData() async {
-    // 确保轨迹和事件数据已加载
+    // Ensure trajectory and event data is loaded
     if (!_currentTrip.trajectory.isLoaded || !_currentTrip.events.isLoaded) {
       await _currentTrip.trajectory.load();
       await _currentTrip.events.load();
       if (mounted) setState(() {});
+    }
+
+    // Lazy load event statistics (for legacy data compatibility)
+    if (_currentTrip.eventStatsJson == null && _currentTrip.events.isNotEmpty) {
+      debugPrint('[TripDetail] Missing statistics detected, calculating...');
+      final storage = ref.read(storageServiceProvider);
+      await storage.calculateEventStats(_currentTrip.id);
+
+      // Reload Trip
+      final updatedTrip = await storage.getTripById(_currentTrip.id);
+      if (updatedTrip != null && mounted) {
+        setState(() {
+          _currentTrip = updatedTrip;
+        });
+      }
+      debugPrint('[TripDetail] Statistics generated');
     }
   }
 
@@ -61,7 +79,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
     );
 
     if (result == true && mounted) {
-      // 重新加载数据
+      // Reload data
       final storage = ref.read(storageServiceProvider);
       final trips = await storage.getAllTrips();
       setState(() {
@@ -72,14 +90,18 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
 
   Future<void> _saveAsImage() async {
     final i18n = ref.read(i18nProvider);
+    debugPrint("[SaveImage] 🟢 开始保存图片流程...");
     try {
-      // 1. 权限请求 (iOS 增强)
+      // 1. Permission Request (iOS Enhancement)
       if (Platform.isIOS) {
         var status = await Permission.photosAddOnly.status;
+        debugPrint("[SaveImage] iOS 相册权限状态: $status");
         if (status.isDenied) {
           status = await Permission.photosAddOnly.request();
+          debugPrint("[SaveImage] 请求 iOS 权限结果: $status");
         }
         if (!status.isGranted && !status.isLimited) {
+          debugPrint("[SaveImage] ❌ 缺少 iOS 相册权限");
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text(i18n.t('error_no_photo_permission'))),
@@ -89,7 +111,8 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
         }
       } else {
         if (await Permission.photos.isDenied) {
-          await Permission.photos.request();
+          final status = await Permission.photos.request();
+          debugPrint("[SaveImage] Android 相册权限请求结果: $status");
         }
       }
 
@@ -103,10 +126,11 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
         );
       }
 
-      // 给一点点时间让 UI 渲染 Header
+      // Give UI a moment to render the Header
       await Future.delayed(const Duration(milliseconds: 200));
 
-      // 捕捉详情长截屏
+      // Capture detail screenshot
+      debugPrint("[SaveImage] 📸 Capturing screenshot...");
       final Uint8List? detailBytes = await _screenshotController.capture(
         delay: const Duration(milliseconds: 100),
       );
@@ -114,23 +138,39 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
       if (mounted) setState(() => _isCapturing = false);
 
       if (detailBytes != null) {
+        debugPrint(
+            "[SaveImage] 💾 Screenshot captured successfully, size: ${detailBytes.length} bytes, saving to gallery...");
+        final fileName =
+            "${i18n.t('trip_report_title')}_${_currentTrip.id}_${DateTime.now().millisecondsSinceEpoch}";
+
         final result = await ImageGallerySaverPlus.saveImage(
           detailBytes,
           quality: 100,
-          name:
-              "TripDetail_${_currentTrip.id}_${DateTime.now().millisecondsSinceEpoch}",
+          name: fileName,
         );
 
-        if (result != null && result['isSuccess'] == true && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(i18n.t('save_success')),
-              backgroundColor: Colors.green,
-            ),
-          );
+        debugPrint("[SaveImage] 🏁 插件返回结果: $result");
+
+        if (result != null && result['isSuccess'] == true) {
+          debugPrint(
+              "[SaveImage] ✅ Image saved successfully! Filename: $fileName");
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(i18n.t('save_success')),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        } else {
+          debugPrint("[SaveImage] ❌ Plugin save failed: $result");
+          throw Exception("Plugin returned failure");
         }
+      } else {
+        debugPrint("[SaveImage] ❌ Screenshot capture returned null");
       }
     } catch (e) {
+      debugPrint("[SaveImage] 🚨 Exception occurred: $e");
       if (mounted) {
         setState(() => _isCapturing = false);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -143,7 +183,119 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
     }
   }
 
+  Future<void> _showEditEventDialog(RecordedEvent e) async {
+    final i18n = ref.read(i18nProvider);
+    final storage = ref.read(storageServiceProvider);
+
+    String currentType = e.type;
+    final textController =
+        TextEditingController(text: e.voiceText ?? e.notes ?? "");
+
+    final Map<String, String> eventTypes = {
+      'proDisengagement': i18n.t('proDisengagement'),
+      'proViolation': i18n.t('proViolation'),
+      'proExperience': i18n.t('proExperience'),
+      'manual': i18n.t('manual'),
+      'rapidAcceleration': i18n.t('rapidAcceleration'),
+      'rapidDeceleration': i18n.t('rapidDeceleration'),
+      'jerk': i18n.t('jerk'),
+      'bump': i18n.t('bump'),
+      'wobble': i18n.t('wobble'),
+    };
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(i18n.t('edit_event')),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(i18n.t('event_type'),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 12)),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      value: currentType,
+                      items: eventTypes.entries.map((entry) {
+                        return DropdownMenuItem(
+                          value: entry.key,
+                          child: Text(entry.value),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null)
+                          setDialogState(() => currentType = val);
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(i18n.t('event_description'),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 12)),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: textController,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    hintText: i18n.t('event_description'),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(i18n.t('cancel')),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                await storage.updateEvent(
+                  _currentTrip.id, // Add tripId parameter
+                  e.id,
+                  type: currentType,
+                  voiceText: textController.text,
+                  notes: textController.text,
+                );
+
+                // Refresh trip details
+                final updatedTrip = await storage.getTripById(_currentTrip.id);
+                if (updatedTrip != null && mounted) {
+                  setState(() {
+                    _currentTrip = updatedTrip;
+                  });
+                }
+
+                if (context.mounted) Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                foregroundColor: Colors.white,
+              ),
+              child: Text(i18n.t('save_changes')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildScreenshotHeader() {
+    final i18n = ref.read(i18nProvider);
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 24),
       width: double.infinity,
@@ -163,7 +315,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            '量化自动驾驶行驶舒适度',
+            i18n.t('app_tagline'),
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w500,
@@ -178,7 +330,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
     );
   }
 
-  // 统一的标题样式
+  // Unified header style
   TextStyle _headerStyle(BuildContext context) => TextStyle(
         fontWeight: FontWeight.bold,
         fontSize: 17,
@@ -188,8 +340,14 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final i18n = ref.watch(i18nProvider);
+    final l10n = AppLocalizations.of(context)!;
     final trip = _currentTrip;
-    final dateStr = DateFormat('yyyy-MM-dd HH:mm').format(trip.startTime);
+
+    // Auto-select date format
+    final datePattern =
+        l10n.localeName == 'zh' ? 'yyyy-MM-dd HH:mm' : 'MMM dd, yyyy HH:mm';
+    final dateStr = DateFormat(datePattern).format(trip.startTime);
+
     final trajectory = trip.trajectory.toList();
     final events = trip.events.toList();
 
@@ -198,8 +356,8 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
         title: Text(
           dateStr,
           style: const TextStyle(
-            fontSize: 12, // 进一步缩小字号
-            letterSpacing: -0.8, // 进一步减少字间距
+            fontSize: 12, // Further reduce font size
+            letterSpacing: -0.8, // Further reduce letter spacing
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -232,9 +390,14 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                               content:
                                   Text(i18n.t('insufficient_data_message')),
                               actions: [
-                                TextButton(
+                                ElevatedButton(
                                   onPressed: () => Navigator.pop(context),
-                                  child: Text(i18n.t('save')),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor:
+                                        Theme.of(context).colorScheme.primary,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  child: Text(i18n.t('confirm')),
                                 ),
                               ],
                             ),
@@ -253,8 +416,13 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                               onPressed: () => Navigator.pop(context, false),
                               child: Text(i18n.t('cancel')),
                             ),
-                            TextButton(
+                            ElevatedButton(
                               onPressed: () => Navigator.pop(context, true),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor:
+                                    Theme.of(context).colorScheme.primary,
+                                foregroundColor: Colors.white,
+                              ),
                               child: Text(i18n.t('upload')),
                             ),
                           ],
@@ -267,14 +435,20 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                           SnackBar(content: Text(i18n.t('uploading'))),
                         );
                         try {
-                          final cloudId = await ref
+                          final uploadResult = await ref
                               .read(cloudTripServiceProvider)
                               .uploadTrip(_currentTrip);
+
+                          final cloudId = uploadResult['id'] as String;
+                          final metrics =
+                              uploadResult['metrics'] as Map<String, dynamic>?;
+
                           await ref
                               .read(storageServiceProvider)
-                              .updateTripCloudId(_currentTrip.id, cloudId);
+                              .updateTripCloudId(_currentTrip.id, cloudId,
+                                  metrics: metrics);
 
-                          // 刷新本地状态
+                          // Refresh local state
                           final updatedTrip = await ref
                               .read(storageServiceProvider)
                               .getTripById(_currentTrip.id);
@@ -307,7 +481,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                       color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
-          // 仅保留一个图片图标，只保存行程详情图
+          // Keep only one image icon - saves trip detail only
           IconButton(
             onPressed: _saveAsImage,
             icon: Icon(
@@ -323,7 +497,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                   duration: const Duration(seconds: 1),
                 ),
               );
-              // 获取按钮的位置用于 iPad/大屏 iPhone 分享菜单定位
+              // Get button position for iPad/large iPhone share menu positioning
               final RenderBox? box = context.findRenderObject() as RenderBox?;
               final Rect? rect = box != null
                   ? box.localToGlobal(Offset.zero) & box.size
@@ -355,7 +529,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
               child: Column(
                 children: [
                   if (_isCapturing) _buildScreenshotHeader(),
-                  // 0. 车辆信息区域 (放入卡片)
+                  // 0. Vehicle Information Section (in Card)
                   Card(
                     margin: EdgeInsets.zero,
                     child: Padding(
@@ -363,7 +537,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                       child: Row(
                         children: [
                           BrandLogo(
-                            brandName: trip.brand,
+                            brandName: trip.brand_ref ?? trip.brand ?? '',
                             size: 52,
                             padding: 10,
                           ),
@@ -384,10 +558,14 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                         Theme.of(context).colorScheme.onSurface,
                                   ),
                                 ),
-                                if (trip.softwareVersion != null &&
-                                    trip.softwareVersion!.isNotEmpty)
+                                if (trip.software_version_ref != null ||
+                                    (trip.softwareVersion != null &&
+                                        trip.softwareVersion!.isNotEmpty))
                                   Text(
-                                    trip.softwareVersion!,
+                                    ref.watch(versionNameProvider(
+                                        trip.software_version_ref ??
+                                            trip.softwareVersion ??
+                                            '')),
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: Theme.of(context)
@@ -420,7 +598,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // 1. 轨迹地图展示 (移除卡片背景和描边，保持原样)
+                  // 1. Trajectory Map Display (keep original style without card background)
                   Container(
                     height: 240,
                     decoration: BoxDecoration(
@@ -438,7 +616,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // 2. 数据概览与图表合入同一张卡片
+                  // 2. Data Overview and Charts (combined in one card)
                   Card(
                     margin: EdgeInsets.zero,
                     child: Padding(
@@ -449,7 +627,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 0),
                             child: SizedBox(
-                              height: 32, // 统一标题高度
+                              height: 32, // Unified title height
                               child: Row(
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceBetween,
@@ -457,7 +635,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                   Text(i18n.t('trip_summary'),
                                       style: _headerStyle(context)),
                                   Text(
-                                    "${(trip.distance / 1000).toStringAsFixed(2)} km",
+                                    trip.getDistanceDisplay(),
                                     style: TextStyle(
                                         fontSize: 15,
                                         fontWeight: FontWeight.w600,
@@ -478,15 +656,11 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                   value: "${trip.eventCount}"),
                               _StatItem(
                                 label: i18n.t('avg_speed'),
-                                value: trip.endTime != null && trip.distance > 0
-                                    ? "${(trip.distance / 1000 / (trip.endTime!.difference(trip.startTime).inSeconds / 3600)).toStringAsFixed(1)} km/h"
-                                    : "--",
+                                value: trip.getAvgSpeedDisplay(),
                               ),
                               _StatItem(
                                   label: i18n.t('duration'),
-                                  value: trip.endTime != null
-                                      ? "${trip.endTime!.difference(trip.startTime).inMinutes} ${i18n.t('min')}"
-                                      : "--"),
+                                  value: trip.getDurationDisplay()),
                             ],
                           ),
                           const SizedBox(height: 24),
@@ -509,7 +683,76 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // 3. 事件列表 (放入独立卡片)
+                  // 2.5 Event Statistics Card (New Feature)
+                  if (trip.eventStats != null)
+                    Card(
+                      margin: EdgeInsets.zero,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 0),
+                              child: SizedBox(
+                                height: 32,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    i18n.t('event_statistics'),
+                                    style: _headerStyle(context),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+
+                            // Auto-detected event statistics
+                            _buildEventStatSection(
+                              title: i18n.t('auto_negative_events'),
+                              stats: trip.eventStats!['auto']
+                                  as Map<String, dynamic>,
+                              totalCount: _sumStats(trip.eventStats!['auto']
+                                  as Map<String, dynamic>),
+                              color: const Color(0xFFFF9500), // iOS Orange
+                              i18n: i18n,
+                              context: context,
+                            ),
+
+                            const Divider(height: 28),
+
+                            // Manually marked event statistics
+                            _buildEventStatSection(
+                              title: i18n.t('manual_marked_events'),
+                              stats: {
+                                'proDisengagement': (trip.eventStats!['pro']
+                                            as Map<String, dynamic>)[
+                                        'proDisengagement'] ??
+                                    0,
+                                'proViolation': (trip.eventStats!['pro'] as Map<
+                                        String, dynamic>)['proViolation'] ??
+                                    0,
+                                'proExperience': (trip.eventStats!['pro']
+                                            as Map<String, dynamic>)[
+                                        'proExperience'] ??
+                                    0,
+                                'manual': trip.eventStats!['manual'] ?? 0,
+                              },
+                              totalCount: _sumStats(trip.eventStats!['pro']
+                                      as Map<String, dynamic>) +
+                                  (trip.eventStats!['manual'] as int? ?? 0),
+                              color: const Color(0xFF007AFF), // iOS Blue
+                              i18n: i18n,
+                              context: context,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (trip.eventStats != null) const SizedBox(height: 16),
+
+                  // 3. Event List (in separate card)
                   if (events.isNotEmpty)
                     Card(
                       margin: EdgeInsets.zero,
@@ -519,7 +762,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                           Padding(
                             padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
                             child: SizedBox(
-                              height: 32, // 统一标题高度
+                              height: 32, // Unified title height
                               child: Align(
                                 alignment: Alignment.centerLeft,
                                 child: Text(i18n.t('event_list'),
@@ -538,6 +781,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                               final typeLabel = i18n.t(e.type);
                               Color eventColor;
                               IconData eventIcon;
+                              String parameter = "--";
 
                               switch (e.type) {
                                 case 'rapidAcceleration':
@@ -560,6 +804,18 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                   eventColor = const Color(0xFF007AFF);
                                   eventIcon = Icons.waves;
                                   break;
+                                case 'proDisengagement':
+                                  eventColor = const Color(0xFFFF3B30);
+                                  eventIcon = Icons.pan_tool;
+                                  break;
+                                case 'proViolation':
+                                  eventColor = const Color(0xFF5856D6);
+                                  eventIcon = Icons.gavel;
+                                  break;
+                                case 'proExperience':
+                                  eventColor = const Color(0xFF007AFF);
+                                  eventIcon = Icons.sentiment_dissatisfied;
+                                  break;
                                 case 'manual':
                                   eventColor = const Color(0xFF34C759);
                                   eventIcon = Icons.stars;
@@ -569,9 +825,11 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                   eventIcon = Icons.event;
                               }
 
-                              // 计算事件参数 (G值)
-                              String parameter = "--";
-                              if (e.sensorData.isNotEmpty) {
+                              // If it's a PRO mode manual mark, parameter displays voice text, not G value
+                              if (e.source == 'PRO' ||
+                                  e.type.startsWith('pro')) {
+                                parameter = e.voiceText ?? e.notes ?? "";
+                              } else if (e.sensorData.isNotEmpty) {
                                 final magnitudes = e.sensorData.map((p) {
                                   if (e.type == 'rapidAcceleration' ||
                                       e.type == 'rapidDeceleration') {
@@ -599,8 +857,9 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                       sum += magnitudes[i + j];
                                     }
                                     final avg = sum / windowSize;
-                                    if (avg > maxSmoothedVal)
+                                    if (avg > maxSmoothedVal) {
                                       maxSmoothedVal = avg;
+                                    }
                                   }
                                 } else if (magnitudes.isNotEmpty) {
                                   maxSmoothedVal =
@@ -608,19 +867,28 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                           magnitudes.length;
                                 }
 
-                                double finalG = e.type == 'manual'
-                                    ? 0
-                                    : (maxSmoothedVal / 9.80665);
-                                parameter = "${finalG.toStringAsFixed(2)} G";
+                                // Smart unit conversion:
+                                // If max value > 3.0, likely m/s² (hard to sustain 3G)
+                                // Otherwise, if already in 0-2 range, likely G unit
+                                double finalG;
+                                if (maxSmoothedVal > 3.0) {
+                                  finalG = maxSmoothedVal / 9.80665;
+                                } else {
+                                  finalG = maxSmoothedVal;
+                                }
+
+                                if (e.type == 'manual') finalG = 0;
+                                parameter =
+                                    l10n.g_unit(finalG.toStringAsFixed(2));
                               }
 
                               return GestureDetector(
                                 onLongPressStart: (_) async {
-                                  // 隐藏功能：长按 3 秒触发删除确认
+                                  // Hidden feature: Long press for 3 seconds triggers delete confirmation
                                   final startTime = DateTime.now();
                                   bool triggered = false;
 
-                                  // 使用 Timer 检查长按时长
+                                  // Use Timer to check long press duration
                                   Timer.periodic(
                                       const Duration(milliseconds: 500),
                                       (timer) async {
@@ -632,7 +900,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                       timer.cancel();
                                       triggered = true;
 
-                                      // 触发触感反馈（如果可用）
+                                      // Trigger haptic feedback (if available)
                                       if (!context.mounted) return;
 
                                       final confirmed = await showDialog<bool>(
@@ -648,9 +916,11 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                                   Navigator.pop(context, false),
                                               child: Text(i18n.t('cancel')),
                                             ),
-                                            TextButton(
-                                              style: TextButton.styleFrom(
-                                                  foregroundColor: Colors.red),
+                                            ElevatedButton(
+                                              style: ElevatedButton.styleFrom(
+                                                  backgroundColor: Colors.red,
+                                                  foregroundColor:
+                                                      Colors.white),
                                               onPressed: () =>
                                                   Navigator.pop(context, true),
                                               child: Text(i18n.t('delete')),
@@ -664,7 +934,7 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                         await ref
                                             .read(storageServiceProvider)
                                             .deleteEvent(_currentTrip.id, e.id);
-                                        // 刷新页面数据
+                                        // Refresh page data
                                         final updatedTrip = await ref
                                             .read(storageServiceProvider)
                                             .getTripById(_currentTrip.id);
@@ -705,11 +975,13 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                               fontWeight: FontWeight.bold,
                                               fontSize: 16)),
                                       const Spacer(),
-                                      Text(parameter,
-                                          style: TextStyle(
-                                              color: eventColor,
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 14)),
+                                      if (e.source != 'PRO' &&
+                                          !e.type.startsWith('pro'))
+                                        Text(parameter,
+                                            style: TextStyle(
+                                                color: eventColor,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14)),
                                     ],
                                   ),
                                   subtitle: Column(
@@ -721,26 +993,40 @@ class _TripDetailScreenState extends ConsumerState<TripDetailScreen> {
                                             .format(e.timestamp),
                                         style: const TextStyle(fontSize: 13),
                                       ),
-                                      if (e.notes != null &&
-                                          e.notes!.isNotEmpty &&
-                                          !e.notes!.contains('聚合特征'))
+                                      if ((e.voiceText != null &&
+                                              e.voiceText!.isNotEmpty) ||
+                                          (e.notes != null &&
+                                              e.notes!.isNotEmpty &&
+                                              e.source != 'AUTO'))
                                         Padding(
                                           padding:
                                               const EdgeInsets.only(top: 2),
                                           child: Text(
-                                            e.notes!,
+                                            e.voiceText ?? e.notes!,
                                             style: TextStyle(
-                                              fontSize: 11,
+                                              fontSize: 12,
                                               color: Theme.of(context)
                                                   .colorScheme
                                                   .primary
-                                                  .withValues(alpha: 0.7),
+                                                  .withValues(alpha: 0.9),
                                               fontWeight: FontWeight.w500,
                                             ),
                                           ),
                                         ),
                                     ],
                                   ),
+                                  trailing: (e.source == 'MANUAL' ||
+                                          e.source == 'PRO')
+                                      ? IconButton(
+                                          icon: const Icon(Icons.edit_outlined,
+                                              size: 20),
+                                          onPressed: () =>
+                                              _showEditEventDialog(e),
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary,
+                                        )
+                                      : null,
                                 ),
                               );
                             },
@@ -787,4 +1073,84 @@ class _StatItem extends StatelessWidget {
       ],
     );
   }
+}
+
+// Helper function: Calculate total statistics count
+int _sumStats(Map<String, dynamic> stats) {
+  int total = 0;
+  stats.forEach((key, value) {
+    if (value is int) total += value;
+  });
+  return total;
+}
+
+// Helper function: Build event statistics section
+Widget _buildEventStatSection({
+  required String title,
+  required Map<String, dynamic> stats,
+  required int totalCount,
+  required Color color,
+  required I18n i18n,
+  required BuildContext context,
+}) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 15,
+            ),
+          ),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              i18n.t('total_count', args: [totalCount.toString()]),
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 10),
+      Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: stats.entries
+            .where((e) => (e.value is int && e.value > 0))
+            .map((e) {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: color.withValues(alpha: 0.2),
+                width: 1,
+              ),
+            ),
+            child: Text(
+              '${i18n.t(e.key)} ${e.value}',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    ],
+  );
 }

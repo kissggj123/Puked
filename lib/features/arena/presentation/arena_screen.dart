@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:puked/common/widgets/brand_logo.dart';
 import 'package:puked/common/widgets/brand_selection.dart';
 import '../providers/arena_provider.dart';
@@ -16,6 +17,9 @@ class ArenaScreen extends ConsumerStatefulWidget {
 class _ArenaScreenState extends ConsumerState<ArenaScreen> {
   // 状态变量
   bool _groupByBrand = true; // 卡片1的 toggle
+  bool _leaderboardWeekly = true; // 里程榜 toggle
+  String _rankingScenario = 'city'; // 场景排名 toggle
+  String _weeklyScenario = 'city'; // 🆕 周度场景排名 toggle
   String? _card2Brand;
   String? _card3Brand;
   String? _card3Version;
@@ -23,44 +27,30 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      // 自动刷新云端数据
-      ref.read(arenaCloudTripsProvider.notifier).refresh();
-
-      final arena = ref.read(arenaProvider);
-      setState(() {
-        _card2Brand = arena.getDefaultBrand();
-        _card3Brand = arena.getDefaultBrand();
-      });
-    });
+    // 移除 WidgetsBinding.instance.addPostFrameCallback，
+    // 改为由 arenaStatsProvider 内部处理初始化加载，
+    // 这样点击 Tab 切换时不会重复触发请求。
   }
 
   Future<void> _onRefresh() async {
-    await ref.read(arenaCloudTripsProvider.notifier).refresh();
+    // 手动刷新时强制更新 (触发云端重新计算)
+    await ref.read(arenaStatsProvider.notifier).refresh(force: true);
   }
 
   @override
   Widget build(BuildContext context) {
     final i18n = ref.watch(i18nProvider);
-    final cloudTripsAsync = ref.watch(arenaCloudTripsProvider);
+    final statsAsync = ref.watch(arenaStatsProvider);
     final arena = ref.watch(arenaProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(i18n.t('arena')),
         actions: [
-          // 在 AppBar 右侧显示同步状态
-          cloudTripsAsync.maybeWhen(
-            loading: () => Container(
-              margin: const EdgeInsets.only(right: 16),
-              width: 16,
-              height: 16,
-              child: const CircularProgressIndicator(strokeWidth: 2),
-            ),
-            orElse: () => IconButton(
-              icon: const Icon(Icons.sync, size: 20),
-              onPressed: _onRefresh,
-            ),
+          // 右上角刷新按钮：根据加载状态进入动画状态
+          _SyncButton(
+            isLoading: statsAsync.isLoading,
+            onPressed: _onRefresh,
           ),
         ],
       ),
@@ -69,125 +59,219 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
         right: true,
         top: false,
         bottom: false,
-        child: RefreshIndicator(
-          onRefresh: _onRefresh,
-          child: cloudTripsAsync.when(
-            loading: () => Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 80,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .primary
-                          .withValues(alpha: 0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Center(
-                      child: SizedBox(
-                        width: 48,
-                        height: 48,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                              Theme.of(context).colorScheme.primary),
+        child: statsAsync.when(
+          skipLoadingOnReload: true,
+          // ✅ loading 时：如果有旧数据就显示旧数据，否则显示加载动画
+          loading: () => statsAsync.hasValue
+              ? _buildArenaContent(arena, i18n)
+              : Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primary
+                              .withValues(alpha: 0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Center(
+                          child: SizedBox(
+                            width: 48,
+                            height: 48,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                  Theme.of(context).colorScheme.primary),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Text(
+                        i18n.t('syncing'),
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Theme.of(context).colorScheme.onSurface,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        i18n.t('fetching_arena_data'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        i18n.t('arena_mileage_requirement'),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primary
+                              .withValues(alpha: 0.5),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+          // ✅ error 时：优先显示旧数据
+          error: (err, stack) => statsAsync.hasValue
+              ? _buildArenaContent(arena, i18n)
+              : ListView(
+                  children: [
+                    SizedBox(
+                      height: MediaQuery.of(context).size.height * 0.7,
+                      child: Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.error_outline,
+                                size: 64, color: Colors.red),
+                            const SizedBox(height: 16),
+                            Text('Error: $err'),
+                            TextButton(
+                              onPressed: _onRefresh,
+                              child: Text(i18n.t('retry')),
+                            ),
+                          ],
                         ),
                       ),
                     ),
+                  ],
+                ),
+          data: (stats) => _buildArenaContent(arena, i18n),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildArenaContent(ArenaService arena, dynamic i18n) {
+    // 检查是否正在后台刷新
+    final statsAsync = ref.watch(arenaStatsProvider);
+    final isRefreshing = statsAsync.isLoading && statsAsync.hasValue;
+
+    return arena.stats.isEmpty
+        ? ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              SizedBox(
+                height: MediaQuery.of(context).size.height * 0.7,
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.leaderboard_outlined,
+                          size: 64,
+                          color: Theme.of(context).colorScheme.outline),
+                      const SizedBox(height: 16),
+                      Text(i18n.t('no_trips_yet'),
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.outline)),
+                    ],
                   ),
-                  const SizedBox(height: 24),
-                  Text(
-                    i18n.t('syncing'),
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Theme.of(context).colorScheme.onSurface,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    i18n.locale.languageCode == 'zh'
-                        ? '正在连接到全球竞技场...'
-                        : 'Connecting to Global Arena...',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-            error: (err, stack) => ListView(
+            ],
+          )
+        : RefreshIndicator(
+            onRefresh: _onRefresh,
+            child: Stack(
               children: [
-                SizedBox(
-                  height: MediaQuery.of(context).size.height * 0.7,
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.error_outline,
-                            size: 64, color: Colors.red),
-                        const SizedBox(height: 16),
-                        Text('Error: $err'),
-                        TextButton(
-                          onPressed: _onRefresh,
-                          child: const Text('Retry'),
+                SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                  child: Column(
+                    children: [
+                      // ✅ 后台刷新提示（不显眼）
+                      if (isRefreshing)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .primary
+                                .withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      Theme.of(context).colorScheme.primary),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                i18n.t('syncing'),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ],
-                    ),
+                      // 🆕 周度卡片区域 - 置顶显示
+                      _buildWeeklyComfortRankingCard(arena, i18n),
+                      const SizedBox(height: 16),
+                      _buildWeeklyMileageCard(arena, i18n),
+                      const SizedBox(height: 16),
+                      // 全时段卡片
+                      _buildCard1(arena, i18n),
+                      const SizedBox(height: 16),
+                      _buildScenarioRankingCard(arena, i18n),
+                      const SizedBox(height: 16),
+                      _buildUserLeaderboardCard(arena, i18n),
+                      const SizedBox(height: 16),
+                      _buildTotalMileageCard(arena, i18n),
+                      const SizedBox(height: 16),
+                      _buildCard2(arena, i18n),
+                      const SizedBox(height: 16),
+                      _buildCard3(arena, i18n),
+                      const SizedBox(height: 32),
+                      // 底部提示文字
+                      Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 32),
+                          child: Text(
+                            i18n.t('arena_mileage_requirement').toUpperCase(),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .outline
+                                  .withValues(alpha: 0.5),
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
                   ),
                 ),
               ],
             ),
-            data: (trips) => trips.isEmpty
-                ? ListView(
-                    // 使用 ListView 确保在空状态下也能下拉刷新
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    children: [
-                      SizedBox(
-                        height: MediaQuery.of(context).size.height * 0.7,
-                        child: Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.leaderboard_outlined,
-                                  size: 64,
-                                  color: Theme.of(context).colorScheme.outline),
-                              const SizedBox(height: 16),
-                              Text(i18n.t('no_trips_yet'),
-                                  style: TextStyle(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .outline)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  )
-                : SingleChildScrollView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-                    child: Column(
-                      children: [
-                        _buildCard1(arena, i18n),
-                        const SizedBox(height: 16),
-                        _buildTotalMileageCard(arena, i18n),
-                        const SizedBox(height: 16),
-                        _buildCard2(arena, i18n),
-                        const SizedBox(height: 16),
-                        _buildCard3(arena, i18n),
-                      ],
-                    ),
-                  ),
-          ),
-        ),
-      ),
-    );
+          );
   }
 
   // 统一的标题样式 (使用 bold 替代 w900)
@@ -203,6 +287,580 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
         fontWeight: FontWeight.w600,
         color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
       );
+
+  // --- 用户里程贡献榜 ---
+  Widget _buildUserLeaderboardCard(ArenaService arena, dynamic i18n) {
+    final data = arena.getUserLeaderboard(weekly: _leaderboardWeekly);
+    final maxVal = data.isNotEmpty ? data.first.totalKm : 1.0;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(i18n.t('arena_leaderboard_title'),
+                      style: _headerStyle(context)),
+                ),
+                const SizedBox(width: 12),
+                Row(
+                  children: [
+                    Text(
+                        _leaderboardWeekly
+                            ? i18n.t('weekly_rank')
+                            : i18n.t('total_rank'),
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.7),
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(width: 12),
+                    GestureDetector(
+                      onTap: () => setState(
+                          () => _leaderboardWeekly = !_leaderboardWeekly),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        width: 44,
+                        height: 24,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        decoration: BoxDecoration(
+                          color: _leaderboardWeekly
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: AnimatedAlign(
+                          duration: const Duration(milliseconds: 200),
+                          alignment: _leaderboardWeekly
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: Container(
+                            width: 16,
+                            height: 16,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            if (data.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: Text(
+                    i18n.t('no_data_for_brand'),
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.outline,
+                        fontSize: 12),
+                  ),
+                ),
+              )
+            else
+              ...data.asMap().entries.map((entry) {
+                final index = entry.key;
+                final item = entry.value;
+                final val = item.totalKm;
+                final ratio = val / (maxVal * 1.1);
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 20.0),
+                  child: Row(
+                    children: [
+                      // 排名
+                      SizedBox(
+                        width: 24,
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.8),
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      // 头像占位/用户图标
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primaryContainer, // 使用容器背景色
+                          shape: BoxShape.circle,
+                          // 核心修复：使用 CachedNetworkImageProvider 缓存头像
+                          image: item.avatarUrl != null
+                              ? DecorationImage(
+                                  image: CachedNetworkImageProvider(
+                                      item.avatarUrl!),
+                                  fit: BoxFit.cover,
+                                )
+                              : null,
+                        ),
+                        child: item.avatarUrl == null
+                            ? Icon(
+                                Icons.person, // 换成实心图标
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onPrimaryContainer,
+                                size: 24,
+                              )
+                            : null,
+                      ),
+                      const SizedBox(width: 16),
+                      // 姓名和进度条
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  item.userName,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  '${val.toStringAsFixed(1)} ${i18n.t('user_mileage_unit')}',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withValues(alpha: 0.8),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Stack(
+                              children: [
+                                Container(
+                                  height: 8,
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerHighest
+                                        .withValues(alpha: 0.3),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                ),
+                                FractionallySizedBox(
+                                  widthFactor: ratio.clamp(0.02, 1.0),
+                                  child: Container(
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color:
+                                          Theme.of(context).colorScheme.primary,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 🆕 --- 周度城区/高速舒适度排名 ---
+  Widget _buildWeeklyComfortRankingCard(ArenaService arena, dynamic i18n) {
+    final data = arena.getWeeklyScenarioRankingData(scenario: _weeklyScenario);
+    final maxVal = data.isNotEmpty ? (data.first.kmPerEvent ?? 1.0) : 1.0;
+    final titleKey = 'weekly_comfort_ranking';
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(i18n.t(titleKey), style: _headerStyle(context)),
+                      const SizedBox(height: 2),
+                      Text(i18n.t('weekly_comfort_desc'),
+                          style: _unitStyle(context)),
+                    ],
+                  ),
+                ),
+                // 场景切换器
+                Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      _buildScenarioToggleItem(i18n.t('city'), 'city',
+                          isWeekly: true),
+                      _buildScenarioToggleItem(i18n.t('highway'), 'highway',
+                          isWeekly: true),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            if (data.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: Text(
+                    i18n.t('no_data_for_brand'),
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.outline,
+                        fontSize: 12),
+                  ),
+                ),
+              )
+            else
+              ...data.asMap().entries.map((entry) {
+                final index = entry.key;
+                final item = entry.value;
+                final val = item.kmPerEvent ?? 0.0;
+                final ratio = val / (maxVal * 1.2);
+                const double barHeight = 16.0;
+                const double nameFontSize = 13.0;
+                const double spacingBetween = 4.0;
+                const double logoSize = 42.0;
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 20.0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.8),
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      BrandLogo(
+                        brandName: item.brand,
+                        overrideLogoUrl: item.logoUrl,
+                        size: logoSize,
+                        padding: 8,
+                        showBackground: true,
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  item.displayName,
+                                  style: const TextStyle(
+                                    fontSize: nameFontSize,
+                                    fontWeight: FontWeight.bold,
+                                    height: 1.2,
+                                  ),
+                                ),
+                                Text(
+                                  val.toStringAsFixed(1),
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withValues(alpha: 0.8),
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: spacingBetween),
+                            Stack(
+                              alignment: Alignment.centerLeft,
+                              children: [
+                                Container(
+                                  height: barHeight,
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerHighest
+                                        .withValues(alpha: 0.3),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                ),
+                                FractionallySizedBox(
+                                  widthFactor: ratio.clamp(0.08, 1.0),
+                                  child: Container(
+                                    height: barHeight,
+                                    decoration: BoxDecoration(
+                                      color:
+                                          const Color(0xFF34C759), // 绿色 - 周度特征色
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 🆕 --- 周度品牌累计里程排名 ---
+  Widget _buildWeeklyMileageCard(ArenaService arena, dynamic i18n) {
+    final data = arena.getWeeklyMileageData();
+    final maxTotalKm = data.isNotEmpty ? (data.first.totalKm ?? 1.0) : 1.0;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // --- 标题行 + 图例右对齐 ---
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(i18n.t('weekly_mileage_ranking'),
+                          style: _headerStyle(context)),
+                      const SizedBox(height: 2),
+                      Text(i18n.t('weekly_mileage_desc'),
+                          style: _unitStyle(context),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                    ],
+                  ),
+                ),
+                // 柔和配色图例：单行展示，避免折行
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildLegendItem('>80', const Color(0xFF007AFF)),
+                      const SizedBox(width: 6),
+                      _buildLegendItem('50-80', const Color(0xFF7ABCFF)),
+                      const SizedBox(width: 6),
+                      _buildLegendItem('20-50', const Color(0xFFADEBB3)),
+                      const SizedBox(width: 6),
+                      _buildLegendItem('<20', const Color(0xFFF9E79F)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            if (data.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: Text(
+                    i18n.t('no_data_for_brand'),
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.outline,
+                        fontSize: 12),
+                  ),
+                ),
+              )
+            else
+              ...data.asMap().entries.map((entry) {
+                final index = entry.key;
+                final item = entry.value;
+                final totalKm = item.totalKm ?? 0.0;
+                final ratio = totalKm / (maxTotalKm * 1.1);
+                const double barHeight = 10.0;
+                const double nameFontSize = 13.0;
+                const double spacingBetween = 6.0;
+                const double logoSize = 42.0;
+
+                final breakdown = item.breakdown ?? {};
+                final highway = breakdown['highway'] ?? 0.0;
+                final smooth = breakdown['smooth'] ?? 0.0;
+                final urban = breakdown['urban'] ?? 0.0;
+                final congested = breakdown['congested'] ?? 0.0;
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 20.0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.8),
+                          ),
+                        ),
+                      ),
+                      BrandLogo(
+                        brandName: item.brand,
+                        overrideLogoUrl: item.logoUrl,
+                        size: logoSize,
+                        padding: 8,
+                        showBackground: true,
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  item.displayName.toUpperCase(),
+                                  style: const TextStyle(
+                                    fontSize: nameFontSize,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                                Text(
+                                  '${totalKm.toStringAsFixed(1)} km',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withValues(alpha: 0.8),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: spacingBetween),
+                            FractionallySizedBox(
+                              widthFactor: ratio.clamp(0.01, 1.0),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(5),
+                                child: Container(
+                                  height: barHeight,
+                                  width: double.infinity,
+                                  decoration: const BoxDecoration(
+                                    color: Color(0xFFF2F2F7),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      if (highway > 0)
+                                        Expanded(
+                                          flex: (highway * 1000)
+                                              .toInt()
+                                              .clamp(1, 999999),
+                                          child: Container(
+                                              color: const Color(0xFF007AFF)),
+                                        ),
+                                      if (smooth > 0)
+                                        Expanded(
+                                          flex: (smooth * 1000)
+                                              .toInt()
+                                              .clamp(1, 999999),
+                                          child: Container(
+                                              color: const Color(0xFF7ABCFF)),
+                                        ),
+                                      if (urban > 0)
+                                        Expanded(
+                                          flex: (urban * 1000)
+                                              .toInt()
+                                              .clamp(1, 999999),
+                                          child: Container(
+                                              color: const Color(0xFFADEBB3)),
+                                        ),
+                                      if (congested > 0)
+                                        Expanded(
+                                          flex: (congested * 1000)
+                                              .toInt()
+                                              .clamp(1, 999999),
+                                          child: Container(
+                                              color: const Color(0xFFF9E79F)),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
 
   // --- 卡片1：无负体验里程 TOP10 ---
   Widget _buildCard1(ArenaService arena, dynamic i18n) {
@@ -220,16 +878,19 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               crossAxisAlignment: CrossAxisAlignment.start, // 标题行靠上
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(i18n.t('arena_top10_title'),
-                        style: _headerStyle(context)),
-                    const SizedBox(height: 2),
-                    Text(i18n.t('km_per_event_long'),
-                        style: _unitStyle(context)),
-                  ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(i18n.t('arena_top10_title'),
+                          style: _headerStyle(context)),
+                      const SizedBox(height: 2),
+                      Text(i18n.t('km_per_event_long'),
+                          style: _unitStyle(context)),
+                    ],
+                  ),
                 ),
+                const SizedBox(width: 12),
                 Row(
                   children: [
                     Text(
@@ -315,6 +976,7 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                     // 1. Logo
                     BrandLogo(
                       brandName: item.brand,
+                      overrideLogoUrl: item.logoUrl, // 关键：使用云端 Logo URL
                       size: logoSize,
                       padding: 8,
                       showBackground: true,
@@ -388,6 +1050,220 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
               );
             }),
           ],
+        ),
+      ),
+    );
+  }
+
+  // --- 深度同步 Web 端：分场景排行榜 (城市/高速) ---
+  Widget _buildScenarioRankingCard(ArenaService arena, dynamic i18n) {
+    final data = arena.getScenarioRankingData(
+        scenario: _rankingScenario, groupByBrand: _groupByBrand);
+    final maxVal = data.isNotEmpty ? (data.first.kmPerEvent ?? 1.0) : 1.0;
+    final titleKey =
+        _rankingScenario == 'city' ? 'low_speed_ranking' : 'high_speed_ranking';
+    final descKey =
+        _rankingScenario == 'city' ? 'low_speed_desc' : 'high_speed_desc';
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(i18n.t(titleKey), style: _headerStyle(context)),
+                      const SizedBox(height: 2),
+                      Text(i18n.t(descKey), style: _unitStyle(context)),
+                    ],
+                  ),
+                ),
+                // 场景切换器
+                Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      _buildScenarioToggleItem(i18n.t('city'), 'city'),
+                      _buildScenarioToggleItem(i18n.t('highway'), 'highway'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            if (data.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: Text(
+                    i18n.t('no_data_for_brand'),
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.outline,
+                        fontSize: 12),
+                  ),
+                ),
+              )
+            else
+              ...data.asMap().entries.map((entry) {
+                final index = entry.key;
+                final item = entry.value;
+                final val = item.kmPerEvent ?? 0.0;
+                final ratio = val / (maxVal * 1.2);
+                const double barHeight = 16.0;
+                const double nameFontSize = 13.0;
+                const double spacingBetween = 4.0;
+                const double logoSize = 42.0;
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 20.0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.8),
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      BrandLogo(
+                        brandName: item.brand,
+                        overrideLogoUrl: item.logoUrl,
+                        size: logoSize,
+                        padding: 8,
+                        showBackground: true,
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  item.displayName,
+                                  style: const TextStyle(
+                                    fontSize: nameFontSize,
+                                    fontWeight: FontWeight.bold,
+                                    height: 1.2,
+                                  ),
+                                ),
+                                Text(
+                                  val.toStringAsFixed(1),
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withValues(alpha: 0.8),
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: spacingBetween),
+                            Stack(
+                              alignment: Alignment.centerLeft,
+                              children: [
+                                Container(
+                                  height: barHeight,
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerHighest
+                                        .withValues(alpha: 0.3),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                ),
+                                FractionallySizedBox(
+                                  widthFactor: ratio.clamp(0.08, 1.0),
+                                  child: Container(
+                                    height: barHeight,
+                                    decoration: BoxDecoration(
+                                      color:
+                                          Theme.of(context).colorScheme.primary,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScenarioToggleItem(String label, String value,
+      {bool isWeekly = false}) {
+    final isSelected =
+        isWeekly ? _weeklyScenario == value : _rankingScenario == value;
+    return GestureDetector(
+      onTap: () => setState(() {
+        if (isWeekly) {
+          _weeklyScenario = value;
+        } else {
+          _rankingScenario = value;
+        }
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.white : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  )
+                ]
+              : null,
+        ),
+        child: Text(
+          label.toUpperCase(),
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w900,
+            color: isSelected
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.5),
+          ),
         ),
       ),
     );
@@ -476,12 +1352,12 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                               .colorScheme
                               .onSurface
                               .withValues(alpha: 0.8),
-                          fontStyle: FontStyle.italic,
                         ),
                       ),
                     ),
                     BrandLogo(
                       brandName: item.brand,
+                      overrideLogoUrl: item.logoUrl,
                       size: logoSize,
                       padding: 8,
                       showBackground: true,
@@ -495,7 +1371,7 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                item.brand.toUpperCase(),
+                                item.displayName.toUpperCase(),
                                 style: const TextStyle(
                                   fontSize: nameFontSize,
                                   fontWeight:
@@ -608,8 +1484,9 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
 
   // --- 卡片2：品牌舒适度进化 ---
   Widget _buildCard2(ArenaService arena, dynamic i18n) {
-    final brand = _card2Brand ?? arena.getDefaultBrand();
-    final data = arena.getEvolutionData(brand);
+    final brandKey = _card2Brand ?? arena.getDefaultBrand();
+    final brandName = arena.getBrandName(brandKey);
+    final data = arena.getEvolutionData(brandKey);
 
     // 计算 Y 轴最大值和刻度间隔 (对齐 Web 端规整算法)
     double maxVal = 0;
@@ -662,42 +1539,50 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    InkWell(
-                      onTap: () =>
-                          _showBrandPicker(context, arena, brand, (selected) {
-                        setState(() => _card2Brand = selected);
-                      }),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              i18n.t('arena_brand_evolution_title',
-                                  args: [brand]),
-                              style: _headerStyle(context),
-                            ),
-                            const SizedBox(width: 4),
-                            Icon(
-                              Icons.arrow_drop_down,
-                              color: Theme.of(context).colorScheme.onSurface,
-                              size: 20,
-                            ),
-                          ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      InkWell(
+                        onTap: () => _showBrandPicker(context, arena, brandKey,
+                            (selected) {
+                          setState(() => _card2Brand = selected);
+                        }),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  i18n.t('arena_brand_evolution_title',
+                                      args: [brandName]),
+                                  style: _headerStyle(context),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(
+                                Icons.arrow_drop_down,
+                                color: Theme.of(context).colorScheme.onSurface,
+                                size: 20,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(i18n.t('km_per_version_event_long'),
-                        style: _unitStyle(context)),
-                  ],
+                      const SizedBox(height: 4),
+                      Text(i18n.t('km_per_version_event_long'),
+                          style: _unitStyle(context)),
+                    ],
+                  ),
                 ),
+                const SizedBox(width: 12),
                 BrandLogo(
-                  brandName: brand,
+                  brandName: brandKey,
+                  overrideLogoUrl:
+                      arena.getBrandLogoUrl(brandKey), // 使用合并后的 Logo URL
                   size: 42,
                   padding: 8,
                   showBackground: true,
@@ -724,18 +1609,32 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                           bottomTitles: AxisTitles(
                             sideTitles: SideTitles(
                               showTitles: true,
+                              reservedSize: 32,
+                              interval: 1,
                               getTitlesWidget: (value, meta) {
                                 final index = value.toInt();
                                 if (index < 0 ||
                                     index >= data.evolution.length) {
                                   return const SizedBox();
                                 }
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 8.0),
-                                  child: Text(data.evolution[index].version,
-                                      style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold)),
+                                final version = data.evolution[index].version;
+                                if (version.isEmpty) return const SizedBox();
+
+                                return SideTitleWidget(
+                                  meta: meta,
+                                  space: 4, // 减少间距防止挤出显示区域
+                                  child: Text(
+                                    version,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 9, // 稍微减小字体
+                                      fontWeight: FontWeight.bold,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurface,
+                                    ),
+                                  ),
                                 );
                               },
                             ),
@@ -743,13 +1642,25 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                           leftTitles: AxisTitles(
                             sideTitles: SideTitles(
                               showTitles: true,
-                              reservedSize: 30,
+                              reservedSize: 38,
                               interval: intervalY,
-                              getTitlesWidget: (value, meta) => Text(
-                                  value.toStringAsFixed(1),
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold)),
+                              getTitlesWidget: (value, meta) => SideTitleWidget(
+                                meta: meta,
+                                space: 8,
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                    value.toStringAsFixed(1),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurface,
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
                           topTitles: const AxisTitles(
@@ -807,8 +1718,9 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
 
   // --- 卡片3：详情详情 ---
   Widget _buildCard3(ArenaService arena, dynamic i18n) {
-    final brand = _card3Brand ?? arena.getDefaultBrand();
-    final data = arena.getSymptomDetails(brand, version: _card3Version);
+    final brandKey = _card3Brand ?? arena.getDefaultBrand();
+    final brandName = arena.getBrandName(brandKey);
+    final data = arena.getSymptomDetails(brandKey, version: _card3Version);
 
     return Card(
       margin: EdgeInsets.zero,
@@ -840,9 +1752,9 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                 Row(
                   children: [
                     _buildFilterChip(
-                        brand,
-                        () =>
-                            _showBrandPicker(context, arena, brand, (selected) {
+                        brandName,
+                        () => _showBrandPicker(context, arena, brandKey,
+                                (selected) {
                               setState(() {
                                 _card3Brand = selected;
                                 _card3Version = null;
@@ -850,8 +1762,10 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                             })),
                     const SizedBox(width: 8),
                     _buildFilterChip(
-                        _card3Version ?? i18n.t('all_versions'),
-                        () => _showVersionPicker(context, i18n, brand,
+                        _card3Version == null
+                            ? i18n.t('all_versions')
+                            : arena.getVersionName(_card3Version!),
+                        () => _showVersionPicker(context, i18n, brandKey,
                                 (selected) {
                               setState(() => _card3Version = selected);
                             })),
@@ -937,18 +1851,12 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
     );
   }
 
-  void _showVersionPicker(BuildContext context, dynamic i18n, String brand,
+  void _showVersionPicker(BuildContext context, dynamic i18n, String brandKey,
       Function(String?) onSelected) {
     final arena = ref.read(arenaProvider);
-    // 从真实行程数据中提取该品牌的所有版本
-    final versions = arena.trips
-        .where((t) => t.brand == brand && t.softwareVersion != null)
-        .map((t) => t.softwareVersion!)
-        .toSet()
-        .toList();
-
-    // 排序版本号
-    versions.sort();
+    // 从预计算的进化数据中提取该品牌的所有版本
+    final evoData = arena.getEvolutionData(brandKey);
+    final versions = evoData.evolution.map((e) => e.version).toList();
 
     final List<String?> options = [null, ...versions];
 
@@ -962,7 +1870,7 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
             itemBuilder: (context, index) {
               final v = options[index];
               return ListTile(
-                title: Text(v ?? i18n.t('all_versions')),
+                title: Text(v == null ? i18n.t('all_versions') : v),
                 onTap: () {
                   onSelected(v);
                   Navigator.pop(context);
@@ -1108,12 +2016,12 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
                   Expanded(
                     child: BrandSelectionGrid(
                       brands: arena.availableBrands,
-                      selectedBrandName: currentBrand,
+                      selectedBrandKey: currentBrand,
                       scrollController: scrollController,
                       shrinkWrap: false,
                       physics: const AlwaysScrollableScrollPhysics(),
                       onBrandSelected: (brand) {
-                        onSelected(brand.name);
+                        onSelected(brand.cloudId ?? brand.name);
                         Navigator.pop(context);
                       },
                     ),
@@ -1124,6 +2032,64 @@ class _ArenaScreenState extends ConsumerState<ArenaScreen> {
           },
         );
       },
+    );
+  }
+}
+
+class _SyncButton extends StatefulWidget {
+  final bool isLoading;
+  final VoidCallback onPressed;
+
+  const _SyncButton({
+    required this.isLoading,
+    required this.onPressed,
+  });
+
+  @override
+  State<_SyncButton> createState() => _SyncButtonState();
+}
+
+class _SyncButtonState extends State<_SyncButton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(seconds: 2),
+      vsync: this,
+    );
+    if (widget.isLoading) _controller.repeat();
+  }
+
+  @override
+  void didUpdateWidget(_SyncButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isLoading != oldWidget.isLoading) {
+      if (widget.isLoading) {
+        _controller.repeat();
+      } else {
+        _controller.stop();
+        _controller.reset();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _controller,
+      child: IconButton(
+        icon: const Icon(Icons.sync, size: 20),
+        onPressed: widget.isLoading ? null : widget.onPressed,
+      ),
     );
   }
 }

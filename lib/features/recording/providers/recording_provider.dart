@@ -1,30 +1,32 @@
-import 'package:flutter/widgets.dart';
-import 'package:flutter/foundation.dart';
-import 'package:vector_math/vector_math_64.dart' hide Colors;
-import 'dart:io';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:puked/features/recording/domain/sensor_engine.dart';
-import 'package:puked/models/db_models.dart';
-import 'package:puked/models/sensor_data.dart';
-import 'package:puked/models/trip_event.dart';
-import 'package:puked/services/storage/storage_service.dart';
-import 'package:puked/features/settings/providers/settings_provider.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:puked/features/recording/domain/ins_engine.dart';
-import 'package:puked/services/amap_service.dart';
-import 'package:latlong2/latlong.dart';
-import 'package:uuid/uuid.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'dart:async';
 import 'dart:collection';
+import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart'; // 显式导入 widgets
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:uuid/uuid.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
-// 传感器引擎 Provider
-final sensorEngineProvider = Provider<SensorEngine>((ref) {
-  final engine = SensorEngine();
-  ref.onDispose(() => engine.dispose());
-  return engine;
-});
+import 'package:puked/common/config/constants.dart';
+import 'package:puked/common/config/enums.dart';
+import 'package:puked/features/recording/domain/algorithm_config.dart';
+import 'package:puked/features/recording/domain/ins_engine.dart';
+import 'package:puked/features/recording/domain/motion_processor.dart';
+import 'package:puked/features/recording/domain/sensor_engine.dart';
+import 'package:puked/features/recording/providers/voice_recording_provider.dart';
+import 'package:puked/features/settings/providers/settings_provider.dart';
+import 'package:puked/models/db_models.dart';
+import 'package:puked/models/sensor_data.dart';
+import 'package:puked/services/amap_service.dart';
+import 'package:puked/services/location_service.dart';
+import 'package:puked/services/storage/storage_service.dart';
+import 'package:puked/services/algorithm_config_service.dart';
+import 'package:puked/services/video_recording_service.dart';
+import 'package:puked/common/utils/i18n.dart';
 
 // 实时传感器流
 final sensorStreamProvider = StreamProvider<SensorData>((ref) {
@@ -33,31 +35,31 @@ final sensorStreamProvider = StreamProvider<SensorData>((ref) {
   return engine.sensorStream;
 });
 
-enum AlgorithmMode {
-  standard, // 库 A: 精简优化
-  expert // 库 B: 顶级动态 (卡尔曼)
-}
+final inertialNavigationEngineProvider =
+    Provider<InertialNavigationEngine>((ref) => InertialNavigationEngine());
+final amapServiceProvider = Provider<AmapService>((ref) => AmapService());
+
+// 用于区分"未传参"和"传入null"的哨兵对象
+const _undefined = Object();
 
 class RecordingState {
   final bool isRecording;
   final bool isCalibrating;
   final Trip? currentTrip;
   final List<RecordedEvent> events;
-  final List<TrajectoryPoint> trajectory; // 增加内存中的轨迹缓存，加速 UI 渲染
-  final double currentDistance; // 当前行程里程 (米)
-  final double maxGForce; // 本次行程的最大 G 值
-  final double currentGForce; // 当前实时的 G 值
-  final Position? currentPosition; // 实时位置
-  final DateTime? lastLocationTime; // 上一次位置更新时间
-  final int locationUpdateCount; // 位置更新计数
-  final String debugMessage; // 调试信息
-  final LocationPermission? permissionStatus; // 权限状态
-  final bool isLowConfidenceGPS; // 是否处于弱信号/地库模式
-  final AlgorithmMode algorithmMode; // 算法模式
-  final bool isSensorFrozen; // 传感器是否假死/停流
-  final DateTime? lastSensorTime; // 最后一个真实的传感器时间
-  final LatLng? lastInsLocation; // 惯导推算的最后一个位置
-  final bool isInsActive; // 是否正在使用惯导推算
+  final List<TrajectoryPoint> trajectory;
+  final double currentDistance;
+  final double currentSpeed;
+  final double maxGForce;
+  final double currentGForce;
+  final Position? currentPosition;
+  final bool isLowConfidenceGPS;
+  final AlgorithmMode algorithmMode;
+  final bool isSensorFrozen;
+  final DateTime? lastSensorTime;
+  final LatLng? lastInsLocation;
+  final bool isInsActive;
+  final String? alertMessage;
 
   RecordingState({
     required this.isRecording,
@@ -66,19 +68,17 @@ class RecordingState {
     this.events = const [],
     this.trajectory = const [],
     this.currentDistance = 0.0,
+    this.currentSpeed = 0.0,
     this.maxGForce = 0.0,
     this.currentGForce = 0.0,
     this.currentPosition,
-    this.lastLocationTime,
-    this.locationUpdateCount = 0,
-    this.debugMessage = '',
-    this.permissionStatus,
     this.isLowConfidenceGPS = false,
-    this.algorithmMode = AlgorithmMode.expert, // 将默认值改为 expert
+    this.algorithmMode = AlgorithmMode.expert,
     this.isSensorFrozen = false,
     this.lastSensorTime,
     this.lastInsLocation,
     this.isInsActive = false,
+    this.alertMessage,
   });
 
   RecordingState copyWith({
@@ -88,19 +88,17 @@ class RecordingState {
     List<RecordedEvent>? events,
     List<TrajectoryPoint>? trajectory,
     double? currentDistance,
+    double? currentSpeed,
     double? maxGForce,
     double? currentGForce,
     Position? currentPosition,
-    DateTime? lastLocationTime,
-    int? locationUpdateCount,
-    String? debugMessage,
-    LocationPermission? permissionStatus,
     bool? isLowConfidenceGPS,
     AlgorithmMode? algorithmMode,
     bool? isSensorFrozen,
     DateTime? lastSensorTime,
     LatLng? lastInsLocation,
     bool? isInsActive,
+    Object? alertMessage = _undefined, // 使用哨兵对象来区分"未传参"和"传入null"
   }) {
     return RecordingState(
       isRecording: isRecording ?? this.isRecording,
@@ -109,19 +107,19 @@ class RecordingState {
       events: events ?? this.events,
       trajectory: trajectory ?? this.trajectory,
       currentDistance: currentDistance ?? this.currentDistance,
+      currentSpeed: currentSpeed ?? this.currentSpeed,
       maxGForce: maxGForce ?? this.maxGForce,
       currentGForce: currentGForce ?? this.currentGForce,
       currentPosition: currentPosition ?? this.currentPosition,
-      lastLocationTime: lastLocationTime ?? this.lastLocationTime,
-      locationUpdateCount: locationUpdateCount ?? this.locationUpdateCount,
-      debugMessage: debugMessage ?? this.debugMessage,
-      permissionStatus: permissionStatus ?? this.permissionStatus,
       isLowConfidenceGPS: isLowConfidenceGPS ?? this.isLowConfidenceGPS,
       algorithmMode: algorithmMode ?? this.algorithmMode,
       isSensorFrozen: isSensorFrozen ?? this.isSensorFrozen,
       lastSensorTime: lastSensorTime ?? this.lastSensorTime,
       lastInsLocation: lastInsLocation ?? this.lastInsLocation,
       isInsActive: isInsActive ?? this.isInsActive,
+      alertMessage: alertMessage == _undefined
+          ? this.alertMessage
+          : alertMessage as String?, // 允许真正设置为 null
     );
   }
 }
@@ -131,629 +129,340 @@ class RecordingNotifier extends StateNotifier<RecordingState>
   final SensorEngine _engine;
   final StorageService _storage;
   final Ref _ref;
-  final InertialNavigationEngine _insEngine = InertialNavigationEngine();
-  final AmapService _amapService = AmapService();
+  late final InertialNavigationEngine _insEngine;
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   StreamSubscription<Position>? _positionSub;
   ProviderSubscription<AsyncValue<SensorData>>? _sensorSub;
 
-  // 隧道模式判定逻辑
+  // 内部状态变量
+  int _locationUpdateCount = 0;
+  DateTime? _lastHardwareTimestamp;
+
+  late final LocationService _locationService;
+  late final MotionProcessor _motionProcessor;
+
   DateTime? _lastGpsTime;
-  static const Duration _gpsTimeout = Duration(seconds: 4); // 4秒没GPS视为进入隧道/弱信号
-  Timer? _insTimer;
-
-  // ... (保持原有常量定义)
-  // 事件检测阈值 (m/s²)
-  static const double _thresholdAccel = 3.14; // 急加速 (约 0.32G)
-  static const double _thresholdDecel = -3.14; // 急刹车 (约 0.32G)
-  static const double _thresholdWobbleSpan = 1.8; // 摆动跨度阈值
-  static const double _thresholdBump = 2.5; // 颠簸 (Z轴突变)
-  static const double _thresholdJerk =
-      6.0; // 顿挫阈值 (m/s³) - 加速度变化率 (调低基准以补偿速度系数增加)
-
-  // 保护期和检测窗口
-  static const Duration _startProtectionDuration = Duration(seconds: 5);
-  static const Duration _wobbleWindow = Duration(milliseconds: 1000);
-  static const Duration _jerkWindow = Duration(milliseconds: 300); // Jerk 计算窗口
   DateTime? _recordingStartTime;
 
-  // 传感器历史记录
-  final ListQueue<MapEntry<DateTime, double>> _xHistory = ListQueue();
-  final ListQueue<MapEntry<DateTime, double>> _yHistory =
-      ListQueue(); // 增加 Y 轴历史用于检测 Jerk
-  final ListQueue<MapEntry<DateTime, double>> _yawRateHistory = ListQueue();
-  final ListQueue<double> _realtimeGHistory = ListQueue(); // 增加实时 G 值平滑缓冲区
+  // 高帧率记录相关
+  DateTime? _lastSensorRecordTime;
 
-  // 防抖计时器 (防止短时间内重复触发同一类型事件)
-  final Map<String, DateTime> _lastTriggered = {};
-  static const Duration _debounceDuration = Duration(seconds: 2);
+  // 缓存最新的传感器数据，用于附加到GPS轨迹点
+  SensorData? _latestSensorData;
 
-  // --- 聚合引擎相关成员 ---
-  final List<_PendingEvent> _pendingEvents = [];
-  Timer? _fusionTimer;
-  static const Duration _fusionWindow = Duration(milliseconds: 3000);
+  // ✅ 缓存最后一个有效的GPS位置，用于高频记录时的坐标填充
+  Position? _lastValidGpsPosition;
+
+  // 速度平滑：GPS 作为目标，显示速度为指数平滑向目标收敛（避免 INS 融合导致的跳变）
+  double _targetSpeed = 0.0; // m/s，来自 GPS
+  double _smoothedSpeed = 0.0; // m/s，用于显示的平滑速度
+  DateTime? _lastSpeedUpdate; // 上次更新 _targetSpeed 的时间
+
+  static const double _speedSmoothAlpha = 0.15; // 平滑系数
+  static const double _speedSmoothAlphaFast = 0.3; // 首帧/刚收 GPS 时略大，加快收敛
+  static const double _speedUpdateThreshold = 0.01; // 仅变化超过此值才写 state，减少重建
+  static const double _maxValidSpeedMs = 150.0; // ~540 km/h，过滤异常 GPS
+
+  AlgorithmConfig get _config => _ref.read(algorithmConfigProvider);
 
   RecordingNotifier(this._engine, this._storage, this._ref)
       : super(RecordingState(
           isRecording: false,
-          algorithmMode: AlgorithmMode.expert, // 默认改为算法 B (专家模式)
+          algorithmMode: AlgorithmMode.expert,
         )) {
-    // 注册生命周期监听
+    _locationService = _ref.read(locationServiceProvider);
+    _insEngine = _ref.read(inertialNavigationEngineProvider);
+
+    // 配置音效播放器，支持 iOS 静音模式播放及与其它音频混音
+    _audioPlayer.setAudioContext(AudioContext(
+      iOS: AudioContextIOS(
+        category: AVAudioSessionCategory.playback,
+        options: {
+          AVAudioSessionOptions.mixWithOthers,
+        },
+      ),
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        stayAwake: true,
+        contentType: AndroidContentType.sonification,
+        usageType: AndroidUsageType.assistanceSonification,
+        audioFocus: AndroidAudioFocus.none,
+      ),
+    ));
+
+    _motionProcessor = MotionProcessor(
+      config: _config,
+      isIos: defaultTargetPlatform == TargetPlatform.iOS,
+      onEventDetected: (type, ts, pos, speed) => tagEvent(
+        type,
+        source: 'AUTO',
+        timestamp: ts,
+        speed: speed,
+        lat: pos?.latitude,
+        lng: pos?.longitude,
+      ),
+      onGForceUpdated: (g) => state = state.copyWith(
+          currentGForce: g, maxGForce: math.max(state.maxGForce, g)),
+    );
+
     WidgetsBinding.instance.addObserver(this);
-    // 延迟启动定位初始化，避免 Android 12+ 启动时的前台服务限制
-    Future.microtask(() => _initializeLocation());
-    // 确保引擎启动，以便缓冲区开始填充数据
-    _engine.start();
+
+    _ref.listen<AlgorithmConfig>(algorithmConfigProvider, (prev, next) {
+      debugPrint('🔔 Algorithm config updated to v${next.version}');
+      _motionProcessor.config = next;
+    });
+
+    Future.microtask(() {
+      final lifecycle = WidgetsBinding.instance.lifecycleState;
+      if (lifecycle == AppLifecycleState.resumed || lifecycle == null) {
+        _startLocationUpdates();
+        _engine.start();
+      }
+    });
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 当 App 回到前台时，如果正在录制，确保 Wakelock 依然开启
-    if (state == AppLifecycleState.resumed && this.state.isRecording) {
-      debugPrint('App resumed, re-enabling Wakelock');
-      WakelockPlus.enable();
+  void didChangeAppLifecycleState(AppLifecycleState appState) {
+    if (appState == AppLifecycleState.resumed) {
+      _startLocationUpdates();
+      _engine.start();
+      if (state.isRecording) WakelockPlus.enable();
+    } else if (appState == AppLifecycleState.paused ||
+        appState == AppLifecycleState.inactive) {
+      if (!state.isRecording) {
+        _stopLocationUpdates();
+        _engine.stop();
+      }
     }
   }
 
-  Future<void> _initializeLocation() async {
+  Future<void> _startLocationUpdates() async {
+    if (_positionSub != null) return;
     try {
-      state = state.copyWith(debugMessage: 'Checking Permission...');
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      state = state.copyWith(permissionStatus: permission);
-
+      final permission = await _locationService.checkAndRequestPermission();
       if (permission == LocationPermission.whileInUse ||
           permission == LocationPermission.always) {
-        state = state.copyWith(debugMessage: 'Getting Initial Position...');
-
-        // 1. 获取初始位置作为“启动触发器”
-        final lastKnown = await Geolocator.getLastKnownPosition();
-        if (lastKnown != null) {
-          state = state.copyWith(
-              currentPosition: lastKnown, debugMessage: 'Initial GPS OK');
+        final lastKnown = await _locationService.getLastKnownPosition();
+        if (lastKnown != null && state.currentPosition == null) {
+          state = state.copyWith(currentPosition: lastKnown);
         }
-
-        // 2. 启动定位流
-        _positionSub?.cancel();
-
-        late LocationSettings locationSettings;
-        if (defaultTargetPlatform == TargetPlatform.android) {
-          locationSettings = AndroidSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 0,
-            intervalDuration: const Duration(seconds: 2), // 调低频率到 2s 规避拦截
-            forceLocationManager:
-                true, // 【关键优化】强制使用系统原生 GPS，绕过 Fused Location 的智能合并/延迟
-            foregroundNotificationConfig: const ForegroundNotificationConfig(
-              notificationText: "Puked 正在记录行程中",
-              notificationTitle: "实时记录中",
-              enableWakeLock: true,
-            ),
-          );
-        } else {
-          locationSettings = AppleSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 0,
-            pauseLocationUpdatesAutomatically: false,
-            showBackgroundLocationIndicator: true,
-          );
+        _positionSub = _locationService.getPositionStream().listen(
+              _handlePositionUpdate,
+              onError: (e) => _stopLocationUpdates(),
+            );
+        if (_locationUpdateCount == 0) {
+          _locationService
+              .getCurrentPosition()
+              .timeout(const Duration(seconds: 5))
+              .then((pos) {
+            if (_locationUpdateCount == 0) _handlePositionUpdate(pos);
+          }).catchError((_) {});
         }
-
-        _positionSub =
-            Geolocator.getPositionStream(locationSettings: locationSettings)
-                .listen(
-          (position) {
-            _handlePositionUpdate(position);
-          },
-          onError: (error) {
-            state = state.copyWith(debugMessage: 'Stream Error: $error');
-          },
-        );
-
-        // 异步尝试获取更高精度的起始点
-        Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.medium,
-          ),
-        ).timeout(const Duration(seconds: 5)).then((pos) {
-          if (state.locationUpdateCount == 0) _handlePositionUpdate(pos);
-        }).catchError((_) {});
       }
     } catch (e) {
-      state = state.copyWith(debugMessage: 'Init Error: $e');
+      debugPrint('Start location error: $e');
     }
   }
 
+  void _stopLocationUpdates() {
+    _positionSub?.cancel();
+    _positionSub = null;
+  }
+
+  int _gpsStabilityCounter = 0;
+  Position? _lastReliableGpsPosition;
+
   void _handlePositionUpdate(Position position) {
-    // 调试打印原始精度
-    debugPrint('GPS Raw Update: Acc:${position.accuracy}');
-
-    // 第一性原理：UI 必须更新
-    final prevPosition = state.currentPosition;
     final now = DateTime.now();
+    if (_lastHardwareTimestamp != null &&
+        !position.timestamp.isAfter(_lastHardwareTimestamp!)) return;
 
-    // 判断是否在“行程起始宽容期”（前 60 秒）
-    bool isInGracePeriod = false;
-    if (state.isRecording && _recordingStartTime != null) {
-      isInGracePeriod = now.difference(_recordingStartTime!).inSeconds < 60;
+    if (position.accuracy < 30.0) {
+      _gpsStabilityCounter++;
+    } else {
+      _gpsStabilityCounter = 0;
     }
 
-    // 动态精度阈值：宽容期 200m，稳定期 50m
-    final double accuracyThreshold = isInGracePeriod ? 200.0 : 50.0;
-    final bool isReliable = position.accuracy <= accuracyThreshold;
-    final bool isLowConfidence =
-        position.accuracy > 40.0; // 只要精度大于 40m，我们就认为是弱信号/室内场景
+    bool isGpsTrulyStable =
+        _gpsStabilityCounter >= 3 || position.accuracy < 15.0;
+
+    if (state.isInsActive && !isGpsTrulyStable && position.accuracy > 60.0)
+      return;
+
+    bool isInGrace = state.isRecording &&
+        _recordingStartTime != null &&
+        now.difference(_recordingStartTime!).inSeconds < 60;
+
+    final bool isReliable = position.accuracy <= (isInGrace ? 200.0 : 50.0);
+
+    if (state.isRecording && _lastReliableGpsPosition != null && isReliable) {
+      final d = _locationService.calculateDistance(
+          _lastReliableGpsPosition!.latitude,
+          _lastReliableGpsPosition!.longitude,
+          position.latitude,
+          position.longitude);
+      final dt = position.timestamp
+              .difference(_lastReliableGpsPosition!.timestamp)
+              .inMilliseconds /
+          1000.0;
+      if (dt > 0.1 && (d / dt) > 80.0) return;
+    }
+
+    // 速度平滑：仅用 GPS 更新目标速度，不直接写 state.currentSpeed（由 _handleSensorData 平滑更新）
+    final newIsInsActive = !isGpsTrulyStable &&
+        position.accuracy > AppConstants.insTriggerAccuracy;
+    if (state.isInsActive && !newIsInsActive) {
+      _smoothedSpeed = state.currentSpeed; // 退出 INS 时从当前显示速度向新 GPS 收敛
+    }
+    final speedMs = position.speed;
+    if (speedMs.isFinite && speedMs >= 0 && speedMs <= _maxValidSpeedMs) {
+      _targetSpeed = speedMs;
+      if (_lastSpeedUpdate == null) {
+        _smoothedSpeed = _targetSpeed; // 首次 GPS：避免从 0 跳变
+      }
+    }
+    _lastSpeedUpdate = now;
 
     state = state.copyWith(
       currentPosition: position,
-      lastLocationTime: now,
-      locationUpdateCount: state.locationUpdateCount + 1,
-      isLowConfidenceGPS: isLowConfidence,
-      debugMessage: isReliable
-          ? 'GPS OK (${position.accuracy.toStringAsFixed(0)}m)'
-          : 'Poor Signal (${position.accuracy.toStringAsFixed(0)}m)',
+      isInsActive: newIsInsActive,
+      isLowConfidenceGPS: position.accuracy > 40.0,
     );
 
     _lastGpsTime = now;
+    _lastHardwareTimestamp = position.timestamp;
+    _locationUpdateCount++;
 
-    // --- 惯导系统修正 ---
+    // ✅ 关键修复：先计算里程，再更新位置变量（避免"先更新后使用"错误）
+    if (state.isRecording && state.currentTrip != null) {
+      if (_lastReliableGpsPosition != null && isReliable) {
+        // 使用【旧的】可靠位置和【新的】当前位置计算距离
+        final d = _locationService.calculateDistance(
+            _lastReliableGpsPosition!.latitude,
+            _lastReliableGpsPosition!.longitude,
+            position.latitude,
+            position.longitude);
+        if (d < 100) {
+          // 过滤异常跳变（>100米）
+          state = state.copyWith(currentDistance: state.currentDistance + d);
+          debugPrint(
+              '📏 [Distance] Updated: ${(state.currentDistance / 1000).toStringAsFixed(3)} km (+${d.toStringAsFixed(1)}m)');
+        } else {
+          debugPrint(
+              '⚠️ [Distance] Rejected abnormal jump: ${d.toStringAsFixed(1)}m');
+        }
+      }
+    }
+
+    // ✅ 里程计算完成后，才更新位置变量
     if (isReliable) {
-      if (!_insEngine.isInitialized) {
-        _insEngine.initialize(
-          LatLng(position.latitude, position.longitude),
-          Vector3.zero(),
-          initialHeading: position.heading, // 使用 GPS 航向初始化惯导
-        );
-      } else {
-        _insEngine.observeGPS(
-          LatLng(position.latitude, position.longitude),
-          position.speed,
-          position.accuracy,
-        );
-      }
-
-      // 如果之前是惯导模式，现在恢复了，触发“二次修正”
-      if (state.isInsActive) {
-        _handleGpsRecovery(position);
-      }
-    }
-
-    // 第二性原理：记录从严 (只有精度达标才进轨迹)
-    if (state.isRecording && state.currentTrip != null && isReliable) {
-      double addedDistance = 0;
-      if (prevPosition != null) {
-        addedDistance = Geolocator.distanceBetween(prevPosition.latitude,
-            prevPosition.longitude, position.latitude, position.longitude);
-      }
-
-      // 距离过滤
-      if (addedDistance < 2.0 &&
-          prevPosition != null &&
-          state.trajectory.isNotEmpty) {
-        return;
-      }
-
-      final point = TrajectoryPoint()
-        ..lat = position.latitude
-        ..lng = position.longitude
-        ..altitude = position.altitude
-        ..speed = position.speed
-        ..timestamp = now
-        ..isLowConfidence = isLowConfidence;
-
-      final newDistance = state.currentDistance + addedDistance;
-      _storage.addTrajectoryPoint(state.currentTrip!.id, point,
-          distance: newDistance);
-      state = state.copyWith(
-        trajectory: [...state.trajectory, point],
-        currentDistance: newDistance,
+      _insEngine.observeGPS(
+        LatLng(position.latitude, position.longitude),
+        position.speed,
+        position.accuracy,
       );
-    }
-  }
+      _lastReliableGpsPosition = position;
 
-  void _detectAutoEvents(SensorData data) {
-    final now = DateTime.now();
-    if (state.isCalibrating) return;
-    if (_recordingStartTime != null &&
-        now.difference(_recordingStartTime!) < _startProtectionDuration) {
-      return;
-    }
-
-    final accel = data.filteredAccel;
-    final gyro = data.processedGyro;
-
-    _xHistory.addLast(MapEntry(now, accel.x));
-    _yHistory.addLast(MapEntry(now, accel.y));
-    _yawRateHistory.addLast(MapEntry(now, gyro.z));
-
-    while (_xHistory.isNotEmpty &&
-        now.difference(_xHistory.first.key) > _wobbleWindow) {
-      _xHistory.removeFirst();
-    }
-    while (_yHistory.isNotEmpty &&
-        now.difference(_yHistory.first.key) >
-            const Duration(milliseconds: 1500)) {
-      _yHistory.removeFirst();
-    }
-    while (_yawRateHistory.isNotEmpty &&
-        now.difference(_yawRateHistory.first.key) > _wobbleWindow) {
-      _yawRateHistory.removeFirst();
-    }
-
-    final sensitivity = _ref.read(settingsProvider).sensitivity;
-    double sensitivityMultiplier = 1.0;
-    if (sensitivity == SensitivityLevel.medium) sensitivityMultiplier = 0.8;
-    if (sensitivity == SensitivityLevel.high) sensitivityMultiplier = 0.6;
-
-    // --- 动态速度敏感度计算 ---
-    double speedMultiplier = 1.0;
-    final currentSpeedKmh = (state.currentPosition?.speed ?? 0) * 3.6;
-
-    if (currentSpeedKmh < 10.0) {
-      speedMultiplier = 0.8; // 从 0.6 提高到 0.8，减少低速起步误报
-    } else if (currentSpeedKmh < 60.0) {
-      // 10km/h 到 60km/h 线性从 0.8 增长到 1.0
-      speedMultiplier = 0.8 + 0.2 * ((currentSpeedKmh - 10.0) / 50.0);
-    } else if (currentSpeedKmh > 80.0) {
-      speedMultiplier = 1.2;
-    }
-
-    final finalMultiplier = sensitivityMultiplier * speedMultiplier;
-
-    bool isDebounced(String type) {
-      final last = _lastTriggered[type];
-      if (last == null) return false;
-      return now.difference(last) < _debounceDuration;
-    }
-
-    // --- 1. 急加速/急减速检测 (结合动态阈值 + 硬性物理保底) ---
-    // 强制保底：在高敏感度且低速下，门槛也不得低于 1.8 (加速) / 2.1 (减速)
-    final double currentAccelThreshold =
-        (_thresholdAccel * finalMultiplier).clamp(1.8, 10.0);
-    final double currentDecelThreshold =
-        (_thresholdDecel * finalMultiplier).clamp(-10.0, -2.1);
-
-    if (accel.y < currentDecelThreshold && !isDebounced('rapidDeceleration')) {
-      _lastTriggered['rapidDeceleration'] = now;
-      _enqueueEvent(EventType.rapidDeceleration, now);
-    } else if (accel.y > currentAccelThreshold &&
-        !isDebounced('rapidAcceleration')) {
-      _lastTriggered['rapidAcceleration'] = now;
-      _enqueueEvent(EventType.rapidAcceleration, now);
-    }
-
-    // --- 2. Jerk (顿挫/点刹) 检测 ---
-    if (!isDebounced('jerk') && _yHistory.length > 5) {
-      // 计算最近 150ms 的加速度变化率
-      final recentY =
-          _yHistory.where((e) => now.difference(e.key) < _jerkWindow).toList();
-      if (recentY.length >= 3) {
-        final deltaA = recentY.last.value - recentY.first.value;
-        final deltaT =
-            recentY.last.key.difference(recentY.first.key).inMilliseconds /
-                1000.0;
-        final jerk = deltaA / deltaT;
-
-        // 如果 Jerk 超过阈值 (这里使用绝对值，因为点刹和猛踩都算顿挫)
-        // 修正：将 sensitivityMultiplier 引入 Jerk 检测，使其支持高中低三档设置
-        if (jerk.abs() >
-            (_thresholdJerk * speedMultiplier * sensitivityMultiplier)) {
-          _lastTriggered['jerk'] = now;
-          _enqueueEvent(EventType.jerk, now);
-        }
+      // ✅ 同时更新有效GPS缓存（用于高频传感器记录）
+      if (position.latitude.abs() > 0.001 && position.longitude.abs() > 0.001) {
+        _lastValidGpsPosition = position;
       }
     }
 
-    // --- 3. 停车回弹 (点头) 检测 ---
-    // 逻辑：如果最近 1 秒内加速度有从明显的负值（刹车）到 0 以上的突变，且当前加速度回归静止
-    if (!isDebounced('jerk') && _yHistory.length > 20) {
-      // 寻找最近 1 秒内的最小值（最强刹车点）和随后的回弹
-      double minAy = 0;
-      double maxAfterMin = -999;
-      bool foundMin = false;
+    if (state.isRecording && state.currentTrip != null) {
+      if (isReliable || isInGrace) {
+        final lastPoint =
+            state.trajectory.isEmpty ? null : state.trajectory.last;
+        if (lastPoint == null ||
+            _locationService.calculateDistance(lastPoint.lat, lastPoint.lng,
+                    position.latitude, position.longitude) >
+                2.0 ||
+            now.difference(lastPoint.timestamp).inSeconds > 2) {
+          final point = TrajectoryPoint()
+            ..lat = position.latitude
+            ..lng = position.longitude
+            ..altitude = position.altitude
+            ..speed = position.speed
+            ..timestamp = now
+            ..isLowConfidence = position.accuracy > 40.0;
 
-      for (var entry in _yHistory) {
-        if (entry.value < minAy) {
-          minAy = entry.value;
-          foundMin = true;
-          maxAfterMin = -999; // 重置最小值之后的搜索
-        }
-        if (foundMin && entry.value > maxAfterMin) {
-          maxAfterMin = entry.value;
-        }
-      }
+          // ✅ 1Hz 传感器数据记录：将最新的传感器数据附加到GPS轨迹点
+          if (_latestSensorData != null) {
+            point.ax = _latestSensorData!.processedAccel.x;
+            point.ay = _latestSensorData!.processedAccel.y;
+            point.az = _latestSensorData!.processedAccel.z;
+            point.gx = _latestSensorData!.processedGyro.x;
+            point.gy = _latestSensorData!.processedGyro.y;
+            point.gz = _latestSensorData!.processedGyro.z;
 
-      // 如果最小值小于 -1.5 (说明有刹车动作) 且回弹幅度大于 1.5
-      if (minAy < -1.5 && (maxAfterMin - minAy) > 1.8) {
-        // 检查是否处于准静止状态 (速度极低或加速度计平稳)
-        if (currentSpeedKmh < 2.0 || accel.y.abs() < 0.2) {
-          _lastTriggered['jerk'] = now;
-          _enqueueEvent(EventType.jerk, now);
-        }
-      }
-    }
-
-    // --- 4. 摆动检测 ---
-    if (!isDebounced('wobble') && _xHistory.length > 10) {
-      double minX = 0;
-      double maxX = 0;
-      DateTime? minTime;
-      DateTime? maxTime;
-
-      for (var entry in _xHistory) {
-        if (entry.value < minX) {
-          minX = entry.value;
-          minTime = entry.key;
-        }
-        if (entry.value > maxX) {
-          maxX = entry.value;
-          maxTime = entry.key;
-        }
-      }
-
-      final span = maxX - minX;
-
-      // 计算窗口内的累积转角 (弧度)
-      double totalYawChange = 0;
-      if (_yawRateHistory.length > 1) {
-        for (int i = 1; i < _yawRateHistory.length; i++) {
-          final dt = _yawRateHistory
-                  .elementAt(i)
-                  .key
-                  .difference(_yawRateHistory.elementAt(i - 1).key)
-                  .inMilliseconds /
-              1000.0;
-          totalYawChange += _yawRateHistory.elementAt(i).value * dt;
-        }
-      }
-
-      // 如果 1 秒内转角超过 15 度 (约 0.26 弧度)，大概率是正在转弯，过滤掉摆动报警
-      bool isTurning = totalYawChange.abs() > 0.26;
-
-      if (span > (_thresholdWobbleSpan * sensitivityMultiplier) && !isTurning) {
-        if (maxX > 0.4 && minX < -0.4) {
-          if (minTime != null && maxTime != null) {
-            final jumpDuration = maxTime.difference(minTime).abs();
-            if (jumpDuration < const Duration(milliseconds: 800)) {
-              _lastTriggered['wobble'] = now;
-              _enqueueEvent(EventType.wobble, now);
-            }
+            debugPrint('🗺️ [1Hz GPS] Trajectory point with sensor data saved');
+            debugPrint(
+                '   ax=${point.ax?.toStringAsFixed(3)}, ay=${point.ay?.toStringAsFixed(3)}, az=${point.az?.toStringAsFixed(3)}');
+            debugPrint(
+                '   gx=${point.gx?.toStringAsFixed(3)}, gy=${point.gy?.toStringAsFixed(3)}, gz=${point.gz?.toStringAsFixed(3)}');
+          } else {
+            debugPrint(
+                '⚠️ [1Hz GPS] Trajectory point saved WITHOUT sensor data (sensor not ready)');
           }
+
+          // ✅ 保存轨迹点时同时更新数据库中的distance字段
+          debugPrint(
+              '💾 [DB Write] Saving trajectory point with distance=${(state.currentDistance / 1000).toStringAsFixed(3)}km');
+          _storage.addTrajectoryPoint(state.currentTrip!.id, point,
+              distance: state.currentDistance / 1000);
+          state = state.copyWith(trajectory: [...state.trajectory, point]);
         }
       }
     }
-
-    if (accel.z.abs() > (_thresholdBump * sensitivityMultiplier) &&
-        !isDebounced('bump')) {
-      _lastTriggered['bump'] = now;
-      _enqueueEvent(EventType.bump, now);
-    }
   }
 
-  Future<void> startRecording({String? carModel, String? notes}) async {
-    if (state.isCalibrating || state.isRecording) return;
-
-    try {
-      state =
-          state.copyWith(isCalibrating: true, debugMessage: 'Calibrating...');
-      await WakelockPlus.enable();
-
-      await _engine.calibrate();
-
-      state = state.copyWith(debugMessage: 'Initing Storage...');
-      await _storage.init();
-      final trip = await _storage.startTrip(
-          carModel: carModel,
-          notes: notes,
-          algorithm: state.algorithmMode.name);
-      _recordingStartTime = DateTime.now();
-      _xHistory.clear();
-      _yHistory.clear();
-      _yawRateHistory.clear();
-      _realtimeGHistory.clear();
-
-      // 【核心改进】点击开始瞬间，如果有位置，立即存入作为起点
-      List<TrajectoryPoint> initialTrajectory = [];
-      if (state.currentPosition != null) {
-        final startPoint = TrajectoryPoint()
-          ..lat = state.currentPosition!.latitude
-          ..lng = state.currentPosition!.longitude
-          ..altitude = state.currentPosition!.altitude
-          ..speed = state.currentPosition!.speed
-          ..timestamp = DateTime.now();
-        _storage.addTrajectoryPoint(trip.id, startPoint, distance: 0);
-        initialTrajectory.add(startPoint);
-      }
-
-      _sensorSub?.close();
-      _sensorSub = _ref.listen<AsyncValue<SensorData>>(
-        sensorStreamProvider,
-        (previous, next) {
-          next.whenData((sensorData) {
-            if (state.isRecording) {
-              // 心跳检测：检查底层引擎最后一次收到硬件中断的时间
-              final now = DateTime.now();
-              final lastActual = _engine.lastSensorEventTime;
-              final isFrozen = now.difference(lastActual).inMilliseconds > 500;
-
-              // 更新状态，如果传感器假死，则在 UI 提示，并在算法中熔断
-              if (state.isSensorFrozen != isFrozen) {
-                state = state.copyWith(
-                  isSensorFrozen: isFrozen,
-                  debugMessage: isFrozen ? 'SENSOR FROZEN' : 'Recording Active',
-                );
-              }
-
-              if (isFrozen) return; // 假死状态，不进行任何自动打标，保护滤波器
-
-              // --- 惯导引擎预测 (核心) ---
-              if (state.isRecording) {
-                _insEngine.predict(sensorData);
-
-                // 检查是否进入“隧道/弱信号模式”
-                final now = DateTime.now();
-                if (_lastGpsTime != null &&
-                    now.difference(_lastGpsTime!) > _gpsTimeout) {
-                  if (!state.isInsActive) {
-                    state = state.copyWith(
-                      isInsActive: true,
-                      debugMessage: 'INS ACTIVE (Tunnel)',
-                    );
-                  }
-
-                  // 在惯导模式下，定时将推算出的位置存入轨迹
-                  _handleInsTick();
-                }
-              }
-
-              final accelForPeak = sensorData.filteredAccel;
-              final rawG = accelForPeak.length / 9.80665;
-
-              // 实时平滑处理
-              _realtimeGHistory.addLast(rawG);
-              if (_realtimeGHistory.length > (Platform.isIOS ? 6 : 3)) {
-                _realtimeGHistory.removeFirst();
-              }
-
-              final smoothedG = _realtimeGHistory.reduce((a, b) => a + b) /
-                  _realtimeGHistory.length;
-
-              state = state.copyWith(
-                currentGForce: smoothedG,
-                maxGForce:
-                    smoothedG > state.maxGForce ? smoothedG : state.maxGForce,
-              );
-
-              if (Platform.isIOS) {
-                if (state.algorithmMode == AlgorithmMode.standard) {
-                  _detectAutoEventsStandard(sensorData);
-                } else {
-                  _detectAutoEventsExpert(sensorData);
-                }
-              } else {
-                // Android 根据模式选择算法
-                if (state.algorithmMode == AlgorithmMode.standard) {
-                  _detectAutoEvents(sensorData);
-                } else {
-                  _detectAutoEventsExpertAndroid(sensorData);
-                }
-              }
-            }
-          });
-        },
-        fireImmediately: true,
-      );
-
-      state = state.copyWith(
-        isRecording: true,
-        isCalibrating: false,
-        currentTrip: trip,
-        events: [],
-        trajectory: initialTrajectory, // 包含起始点
-        currentDistance: 0.0,
-        maxGForce: 0.0,
-        debugMessage: 'Recording Active',
-      );
-    } catch (e, stack) {
-      debugPrint('ERROR startRecording: $e');
-      debugPrint(stack.toString());
-      state = state.copyWith(
-          isRecording: false, isCalibrating: false, debugMessage: 'CRASH: $e');
-    }
-  }
-
-  Future<void> stopRecording() async {
-    if (state.currentTrip != null) {
-      await _storage.endTrip(state.currentTrip!.id);
-    }
-    _sensorSub?.close();
-    _sensorSub = null;
-    await WakelockPlus.disable();
+  void _handleInsTick() {
+    if (!state.isInsActive) return;
+    final insLatLng = _insEngine.getCurrentLatLng();
     state = state.copyWith(
-      isRecording: false,
-      isCalibrating: false,
-      currentTrip: null,
-      events: [],
-      trajectory: [],
-      currentDistance: 0.0,
-      maxGForce: 0.0,
-      currentPosition: state.currentPosition,
+      currentPosition: Position(
+        latitude: insLatLng.latitude,
+        longitude: insLatLng.longitude,
+        timestamp: DateTime.now(),
+        accuracy: 0,
+        altitude: state.currentPosition?.altitude ?? 0,
+        heading: state.currentPosition?.heading ?? 0,
+        speed: _insEngine.currentSpeed,
+        speedAccuracy: 0,
+        altitudeAccuracy: 0,
+        headingAccuracy: 0,
+      ),
+      currentSpeed: _insEngine.currentSpeed,
+      lastInsLocation: insLatLng,
     );
   }
 
-  /// 惯导模式下的轨迹记录点
-  void _handleInsTick() {
-    final now = DateTime.now();
-    // 限制惯导点记录频率 (例如每 1 秒记一个点)
-    if (state.lastLocationTime != null &&
-        now.difference(state.lastLocationTime!).inMilliseconds < 1000) {
-      return;
-    }
-
-    final LatLng insLatLng = _insEngine.getCurrentLatLng();
-
-    // 记录惯导轨迹点
-    final point = TrajectoryPoint()
-      ..lat = insLatLng.latitude
-      ..lng = insLatLng.longitude
-      ..speed = 0 // 速度可由 insEngine 估算
-      ..timestamp = now
-      ..isLowConfidence = true;
-
-    if (state.currentTrip != null) {
-      _storage.addTrajectoryPoint(state.currentTrip!.id, point);
-      state = state.copyWith(
-        trajectory: [...state.trajectory, point],
-        lastLocationTime: now,
-        lastInsLocation: insLatLng,
-      );
-    }
-  }
-
-  /// GPS 恢复瞬间的“二次修正”与“地图抓路”
-  Future<void> _handleGpsRecovery(Position newPosition) async {
-    final prevInsLocation = state.lastInsLocation;
-    if (prevInsLocation == null) return;
-
-    state = state.copyWith(isInsActive: false, debugMessage: 'GPS RECOVERED');
-
-    // 1. 地图纠偏：利用高德“抓路”服务修正隧道内的轨迹
-    // 我们可以取隧道内的最后 10 个点进行修正
-    final tunnelPoints =
-        state.trajectory.where((p) => p.isLowConfidence == true).toList();
-
-    if (tunnelPoints.length > 2) {
-      final List<LatLng> rawPts =
-          tunnelPoints.map((p) => LatLng(p.lat, p.lng)).toList();
-      final correctedPts = await _amapService.grabRoad(rawPts);
-
-      // 更新内存中的轨迹（这里可以做更复杂的平滑，目前先直接替换）
-      // ... 逻辑略 ...
-    }
-
-    debugPrint('INS Drift Corrected by GPS');
-  }
-
   Future<void> tagEvent(EventType type,
-      {String source = 'MANUAL', String? notes}) async {
+      {String source = 'MANUAL',
+      String? notes,
+      String? voiceText,
+      DateTime? timestamp,
+      double? speed,
+      double? lat,
+      double? lng}) async {
     if (!state.isRecording || state.currentTrip == null) return;
 
-    final now = DateTime.now();
-    // iOS 使用下采样存储 (20Hz)，Android 维持原样
-    final fragment =
-        _engine.getLookbackBuffer(10, targetHz: Platform.isIOS ? 20 : 30);
+    final eventTime = timestamp ?? DateTime.now();
+    final fragment = _engine.getLookbackBuffer(
+        AppConstants.lookbackBufferSeconds,
+        targetHz: AppConstants.targetSensorHz,
+        endTime: eventTime);
 
     final event = RecordedEvent()
       ..uuid = const Uuid().v4()
-      ..timestamp = now
+      ..timestamp = eventTime
       ..type = type.name
       ..source = source
-      ..notes = notes ?? "" // 使用传入的备注
+      ..speed = speed ?? _insEngine.currentSpeed
+      ..gForce = state.currentGForce
+      ..notes = notes ?? ""
+      ..voiceText = voiceText
       ..sensorData = fragment
           .map((d) => SensorPointEmbedded()
             ..ax = d.processedAccel.x
@@ -765,10 +474,13 @@ class RecordingNotifier extends StateNotifier<RecordingState>
             ..mx = d.magnetometer.x
             ..my = d.magnetometer.y
             ..mz = d.magnetometer.z
-            ..offsetMs = d.timestamp.difference(now).inMilliseconds)
+            ..offsetMs = d.timestamp.difference(eventTime).inMilliseconds)
           .toList();
 
-    if (state.currentPosition != null) {
+    if (lat != null && lng != null) {
+      event.lat = lat;
+      event.lng = lng;
+    } else if (state.currentPosition != null) {
       event.lat = state.currentPosition!.latitude;
       event.lng = state.currentPosition!.longitude;
     }
@@ -776,459 +488,316 @@ class RecordingNotifier extends StateNotifier<RecordingState>
     await _storage.saveEvent(state.currentTrip!.id, event);
     state = state.copyWith(events: [...state.events, event]);
 
-    // 播放负体验音效：仅在非手动标记且设置开启时播放
-    if (type != EventType.manual &&
-        _ref.read(settingsProvider).isEventSoundEnabled) {
-      _audioPlayer.play(AssetSource('sound/events.mp3'));
+    // 🎥 视频录制：如果启用了视频录制，保存前5秒视频
+    final settings = _ref.read(settingsProvider);
+    if (settings.isVideoRecordingEnabled) {
+      final videoService = _ref.read(videoRecordingServiceProvider);
+      final videoPath = await videoService.captureEventVideo(
+        eventId: event.uuid,
+        duration: 5,
+      );
+
+      if (videoPath != null) {
+        debugPrint(
+            '[Recording] 🎥 Video saved for event ${event.uuid}: $videoPath');
+        // TODO: 将视频路径保存到 RecordedEvent 中（需要扩展数据模型）
+        // event.videoPath = videoPath;
+      } else {
+        debugPrint(
+            '[Recording] ⚠️ Failed to save video for event ${event.uuid}');
+      }
+    }
+
+    // 播放提示音 (所有来源均遵守设置开关)
+    if (settings.isEventSoundEnabled) {
+      debugPrint(
+          '[Recording] 🔊 Playing event sound. Source: $source, Volume: 1.0');
+      _audioPlayer.play(
+        AssetSource('sound/events.mp3'),
+        volume: 1.0, // 统一调大音量
+      );
     }
   }
 
-  void setAlgorithmMode(AlgorithmMode mode) {
-    state = state.copyWith(algorithmMode: mode);
+  void setAlgorithmMode(AlgorithmMode mode) =>
+      state = state.copyWith(algorithmMode: mode);
+
+  Future<void> startRecording({String? carModel, String? notes}) async {
+    if (state.isCalibrating || state.isRecording) return;
+    try {
+      state = state.copyWith(isCalibrating: true);
+      await WakelockPlus.enable();
+      await _engine.calibrate(
+          currentSpeedMs: state.currentPosition?.speed ?? 0.0);
+      await _storage.init();
+      final trip = await _storage.startTrip(
+          carModel: carModel,
+          notes: notes,
+          algorithm: state.algorithmMode.name);
+
+      // ✅ 初始化所有关键时间戳和位置变量
+      _recordingStartTime = DateTime.now();
+      _lastGpsTime = DateTime.now();
+      _lastSensorRecordTime = null; // 重置传感器记录时间
+      _gpsStabilityCounter = 0;
+      _insEngine.reset();
+
+      // ✅ 初始化位置变量，用于里程计算
+      if (state.currentPosition != null) {
+        _lastReliableGpsPosition = state.currentPosition;
+        _lastValidGpsPosition = state.currentPosition;
+      }
+
+      // 速度平滑：新行程从当前 GPS 速度开始，避免上一行程残留
+      final initialSpeed = state.currentPosition?.speed ?? 0.0;
+      _targetSpeed =
+          initialSpeed.isFinite && initialSpeed >= 0 ? initialSpeed : 0.0;
+      _smoothedSpeed = _targetSpeed;
+      _lastSpeedUpdate = DateTime.now();
+
+      if (state.currentPosition != null) {
+        final startPoint = TrajectoryPoint()
+          ..lat = state.currentPosition!.latitude
+          ..lng = state.currentPosition!.longitude
+          ..altitude = state.currentPosition!.altitude
+          ..speed = state.currentPosition!.speed
+          ..timestamp = DateTime.now();
+        _storage.addTrajectoryPoint(trip.id, startPoint, distance: 0);
+        state = state.copyWith(trajectory: [startPoint]);
+      }
+
+      _sensorSub?.close();
+      _sensorSub = _ref.listen<AsyncValue<SensorData>>(sensorStreamProvider,
+          (prev, next) => next.whenData(_handleSensorData),
+          fireImmediately: true);
+
+      _engine.setRecording(true);
+
+      // ✅ 初始化行程状态，重置所有计数器
+      state = state.copyWith(
+        isRecording: true,
+        isCalibrating: false,
+        currentTrip: trip,
+        events: [],
+        currentDistance: 0.0, // 重置里程
+        maxGForce: 0.0, // 重置峰值G力
+      );
+
+      // 🎥 如果启用了视频录制，启动视频录制服务
+      final settings = _ref.read(settingsProvider);
+      if (settings.isVideoRecordingEnabled) {
+        final videoService = _ref.read(videoRecordingServiceProvider);
+        final started = await videoService.startRecording(
+          resolution: '1080p',
+          fps: 60,
+          bufferDuration: 10,
+        );
+
+        if (started) {
+          debugPrint('[Recording] 🎥 Video recording started');
+        } else {
+          debugPrint('[Recording] ⚠️ Failed to start video recording');
+        }
+      }
+    } catch (e) {
+      // 提取错误消息的key（去除 "Exception: " 前缀）
+      String errorKey = e.toString();
+      debugPrint('[Recording] Caught calibration error: $errorKey');
+      if (errorKey.startsWith('Exception: ')) {
+        errorKey = errorKey.substring('Exception: '.length);
+      }
+      debugPrint('[Recording] Cleaned error key: $errorKey');
+      state = state.copyWith(isCalibrating: false, alertMessage: errorKey);
+    }
   }
 
-  // --- 库 A: iOS 精简优化版 (Refined Standard) ---
-  void _detectAutoEventsStandard(SensorData data) {
+  void _handleSensorData(SensorData sensorData) {
+    if (!state.isRecording) return;
     final now = DateTime.now();
-    // 1. 启动保护期校验
-    if (_recordingStartTime != null &&
-        now.difference(_recordingStartTime!) < _startProtectionDuration) {
-      return;
+    final lastActual = _engine.lastSensorEventTime;
+    final isFrozen = now.difference(lastActual).inMilliseconds > 500;
+
+    if (state.isSensorFrozen != isFrozen) {
+      state = state.copyWith(isSensorFrozen: isFrozen);
     }
+    if (isFrozen) return;
 
-    final accel = data.filteredAccel;
-    final gyro = data.processedGyro;
+    // 缓存最新的传感器数据，供GPS轨迹点使用（1Hz记录）
+    _latestSensorData = sensorData;
 
-    _xHistory.addLast(MapEntry(now, accel.x));
-    _yHistory.addLast(MapEntry(now, accel.y));
-    _yawRateHistory.addLast(MapEntry(now, gyro.z));
+    // 🔍 DEBUG: 验证传感器数据缓存
+    debugPrint(
+        '🔄 [Sensor Cache] Updated: ax=${sensorData.processedAccel.x.toStringAsFixed(3)}, ay=${sensorData.processedAccel.y.toStringAsFixed(3)}, az=${sensorData.processedAccel.z.toStringAsFixed(3)}');
 
-    // 窗口清理 (iOS 60Hz 需保留更多点)
-    while (_xHistory.isNotEmpty &&
-        now.difference(_xHistory.first.key) > _wobbleWindow) {
-      _xHistory.removeFirst();
-    }
-    while (_yHistory.isNotEmpty &&
-        now.difference(_yHistory.first.key) >
-            const Duration(milliseconds: 1500)) {
-      _yHistory.removeFirst();
-    }
-    while (_yawRateHistory.isNotEmpty &&
-        now.difference(_yawRateHistory.first.key) > _wobbleWindow) {
-      _yawRateHistory.removeFirst();
-    }
+    _insEngine.predict(sensorData);
 
-    final multiplier = _getFinalMultiplier();
-
-    bool isDebounced(String type) {
-      final last = _lastTriggered[type];
-      return last != null && now.difference(last) < _debounceDuration;
-    }
-
-    // 1. 急加减速 + Jerk 物理熔断
-    // 逻辑：如果 Y 轴变化率极其恐怖 (> 40m/s³)，视为传感器跳变噪声，熔断
-    final recentY =
-        _yHistory.where((e) => now.difference(e.key) < _jerkWindow).toList();
-    double jerk = 0;
-    if (recentY.length >= 3) {
-      final deltaA = recentY.last.value - recentY.first.value;
-      final deltaT =
-          recentY.last.key.difference(recentY.first.key).inMilliseconds /
-              1000.0;
-      if (deltaT > 0) jerk = deltaA / deltaT;
-    }
-
-    if (jerk.abs() < 40.0) {
-      // 只有在物理合理的范围内才检测
-      if (accel.y < (_thresholdDecel * multiplier) &&
-          !isDebounced('rapidDeceleration')) {
-        _lastTriggered['rapidDeceleration'] = now;
-        _enqueueEvent(EventType.rapidDeceleration, now);
-      } else if (accel.y > (_thresholdAccel * multiplier) &&
-          !isDebounced('rapidAcceleration')) {
-        _lastTriggered['rapidAcceleration'] = now;
-        _enqueueEvent(EventType.rapidAcceleration, now);
+    // 速度平滑：仅当非 INS 时用平滑值更新 state.currentSpeed（INS 时由 _handleInsTick 写入）
+    if (!state.isInsActive) {
+      final dtMs = _lastSpeedUpdate != null
+          ? now.difference(_lastSpeedUpdate!).inMilliseconds
+          : 0;
+      final alpha = dtMs < 100 ? _speedSmoothAlphaFast : _speedSmoothAlpha;
+      _smoothedSpeed = _smoothedSpeed * (1.0 - alpha) + _targetSpeed * alpha;
+      if ((state.currentSpeed - _smoothedSpeed).abs() > _speedUpdateThreshold) {
+        state = state.copyWith(currentSpeed: _smoothedSpeed);
       }
     }
 
-    // 2. 摆动检测 + 零点交叉 (Zero-crossing)
-    if (!isDebounced('wobble') && _xHistory.length > 20) {
-      double minX = 0;
-      double maxX = 0;
-      int crossCount = 0;
-      double? lastVal;
+    if (state.isInsActive) {
+      final bool isTooOld =
+          _lastGpsTime != null && now.difference(_lastGpsTime!).inSeconds > 60;
+      if (isTooOld) {
+        state = state.copyWith(isInsActive: false);
+      } else {
+        _handleInsTick();
+      }
+    } else {
+      final bool isMissing = _lastGpsTime != null &&
+          now.difference(_lastGpsTime!) > AppConstants.gpsTimeout;
+      final bool isUnreliable = (state.currentPosition?.accuracy ?? 0) >
+          AppConstants.insTriggerAccuracy;
+      if (_insEngine.isInitialized && (isMissing || isUnreliable)) {
+        state = state.copyWith(isInsActive: true);
+      }
+    }
 
-      for (var entry in _xHistory) {
-        if (entry.value < minX) minX = entry.value;
-        if (entry.value > maxX) maxX = entry.value;
+    // 静止判断只用 GPS 速度，避免 INS 在手机角度变化时误报 1～5 导致「无法校准」的死循环
+    final speedForStationary = (state.isInsActive || _lastSpeedUpdate == null)
+        ? 999.0 // INS 或无 GPS：视为非静止，不触发自动校准
+        : _targetSpeed;
+    _engine.updateSpeed(speedForStationary);
 
-        // 统计过零点次数
-        if (lastVal != null &&
-            ((lastVal <= 0 && entry.value > 0) ||
-                (lastVal >= 0 && entry.value < 0))) {
-          crossCount++;
+    _motionProcessor.process(sensorData, state.currentSpeed,
+        state.currentPosition, state.isInsActive);
+
+    // --- 传感器数据记录 ---
+    // 高帧率模式 (10Hz) 或 普通模式 (1Hz)
+    final settings = _ref.read(settingsProvider);
+    final recordIntervalMs = settings.isHighFrameRateEnabled ? 100 : 1000;
+
+    if (state.currentTrip != null) {
+      if (_lastSensorRecordTime == null ||
+          now.difference(_lastSensorRecordTime!).inMilliseconds >=
+              recordIntervalMs) {
+        _lastSensorRecordTime = now;
+
+        // 创建包含传感器数据的轨迹点
+        // 注意：为了防止内存溢出和 UI 卡顿，高频点仅持久化，不进入 state.trajectory
+        final displaySpeed = state.isInsActive
+            ? _insEngine.currentSpeed
+            : (state.currentPosition?.speed ?? 0.0);
+
+        // ✅ 使用最后有效的GPS位置，如果当前GPS无效
+        final gpsToUse = (state.currentPosition != null &&
+                state.currentPosition!.latitude.abs() > 0.001 &&
+                state.currentPosition!.longitude.abs() > 0.001)
+            ? state.currentPosition
+            : _lastValidGpsPosition;
+
+        // ✅ 只有在有有效GPS时才记录轨迹点
+        if (gpsToUse != null) {
+          final sensorPoint = TrajectoryPoint()
+            ..timestamp = now
+            ..lat = gpsToUse.latitude
+            ..lng = gpsToUse.longitude
+            ..altitude = gpsToUse.altitude
+            ..speed = displaySpeed
+            ..isLowConfidence = state.isLowConfidenceGPS
+            ..ax = sensorData.processedAccel.x
+            ..ay = sensorData.processedAccel.y
+            ..az = sensorData.processedAccel.z
+            ..gx = sensorData.processedGyro.x
+            ..gy = sensorData.processedGyro.y
+            ..gz = sensorData.processedGyro.z;
+
+          _storage.addTrajectoryPointBatched(
+              state.currentTrip!.id, sensorPoint);
+
+          if (settings.isHighFrameRateEnabled) {
+            debugPrint(
+                '📡 [10Hz] Queued sensor data with GPS: lat=${gpsToUse.latitude.toStringAsFixed(6)}');
+          } else {
+            debugPrint(
+                '📡 [1Hz] Queued sensor data with GPS: lat=${gpsToUse.latitude.toStringAsFixed(6)}');
+          }
+        } else {
+          // GPS完全丢失，跳过此次记录
+          debugPrint(
+              '⚠️ [${settings.isHighFrameRateEnabled ? "10Hz" : "1Hz"}] Skipped: No valid GPS available');
         }
-        lastVal = entry.value;
       }
-
-      final span = maxX - minX;
-      // 摆动必须满足：幅度够大 + 至少有一次完整的往返 (过零点次数 >= 2)
-      if (span > (_thresholdWobbleSpan * multiplier) && crossCount >= 2) {
-        // Z 轴联动过滤：如果此时 Z 轴也在剧烈跳变 (> 3.0)，说明是手晃
-        if (accel.z.abs() < 3.0) {
-          _lastTriggered['wobble'] = now;
-          _enqueueEvent(EventType.wobble, now);
-        }
-      }
-    }
-
-    // 3. 颠簸检测
-    if (accel.z.abs() > (_thresholdBump * multiplier) && !isDebounced('bump')) {
-      _lastTriggered['bump'] = now;
-      _enqueueEvent(EventType.bump, now);
     }
   }
 
-  // --- 库 B: iOS 专家引擎 (World-Class Expert) ---
-  void _detectAutoEventsExpert(SensorData data) {
-    final now = DateTime.now();
-    // 1. 启动保护期校验
-    if (_recordingStartTime != null &&
-        now.difference(_recordingStartTime!) < _startProtectionDuration) {
-      return;
-    }
-
-    final accel = data.filteredAccel;
-
-    // 专家级额外逻辑：多轴 Jerk 能量评估
-    final recentPoints =
-        _engine.getLookbackBuffer(1, targetHz: 60); // 获取最近 1 秒高频原始点
-    double totalJerkEnergy = 0;
-    double maxAngularRate = 0; // 新增：窗口内最大旋转角速度
-
-    if (recentPoints.length > 2) {
-      for (int i = 1; i < recentPoints.length; i++) {
-        final dA = (recentPoints[i].processedAccel -
-                recentPoints[i - 1].processedAccel)
-            .length;
-        totalJerkEnergy += dA;
-
-        // 跟踪最大旋转强度
-        final rotationStrength = recentPoints[i].processedGyro.length;
-        if (rotationStrength > maxAngularRate)
-          maxAngularRate = rotationStrength;
-      }
-    }
-
-    double expertMultiplier = 1.0;
-
-    // --- 动态姿态守卫 (支架共振识别) ---
-    if (maxAngularRate > 0.4) {
-      expertMultiplier *= 3.0; // 严重抖动：三倍压制
-    } else if (maxAngularRate > 0.2) {
-      expertMultiplier *= 1.5; // 轻微晃动：1.5倍压制
-    }
-
-    if (totalJerkEnergy > 50.0) {
-      expertMultiplier *= 2.0;
-    }
-
-    final baseMultiplier = _getFinalMultiplier();
-    final finalMultiplier = baseMultiplier * expertMultiplier;
-
-    bool isDebounced(String type) {
-      final last = _lastTriggered[type];
-      return last != null && now.difference(last) < _debounceDuration;
-    }
-
-    // 执行纵向检测 (带上专家倍率 + 物理极值 + 轴间压制)
-    final currentSpeedKmh = (state.currentPosition?.speed ?? 0) * 3.6;
-    double speedFloor = 1.8;
-    if (currentSpeedKmh < 15.0) {
-      speedFloor = 2.5;
-    }
-
-    final double currentAccelThreshold =
-        (_thresholdAccel * finalMultiplier).clamp(speedFloor, 15.0);
-    final double currentDecelThreshold =
-        (_thresholdDecel * finalMultiplier).clamp(-15.0, -speedFloor);
-
-    // 轴间相关性压制逻辑
-    bool isVerticalSuppressed = accel.z.abs() > (accel.y.abs() * 1.5);
-    bool isHorizontalSuppressed = accel.x.abs() > (accel.y.abs() * 0.8);
-
-    if (accel.y < currentDecelThreshold && !isDebounced('rapidDeceleration')) {
-      if (!isVerticalSuppressed && !isHorizontalSuppressed) {
-        _lastTriggered['rapidDeceleration'] = now;
-        _enqueueEvent(EventType.rapidDeceleration, now);
-      }
-    } else if (accel.y > currentAccelThreshold &&
-        !isDebounced('rapidAcceleration')) {
-      if (!isVerticalSuppressed && !isHorizontalSuppressed) {
-        _lastTriggered['rapidAcceleration'] = now;
-        _enqueueEvent(EventType.rapidAcceleration, now);
-      }
-    }
-
-    // 摆动检测：专家模式要求更严苛的零点交叉 (3次以上)
-    if (!isDebounced('wobble') && _xHistory.length > 30) {
-      double minX = 0;
-      double maxX = 0;
-      int crossCount = 0;
-      double? lastVal;
-      for (var entry in _xHistory) {
-        if (entry.value < minX) minX = entry.value;
-        if (entry.value > maxX) maxX = entry.value;
-        if (lastVal != null &&
-            ((lastVal <= 0 && entry.value > 0) ||
-                (lastVal >= 0 && entry.value < 0))) {
-          crossCount++;
-        }
-        lastVal = entry.value;
-      }
-
-      final span = maxX - minX;
-      if (span > (_thresholdWobbleSpan * finalMultiplier) && crossCount >= 3) {
-        if (accel.z.abs() < 2.0) {
-          // 更严的 Z 轴约束
-          _lastTriggered['wobble'] = now;
-          _enqueueEvent(EventType.wobble, now);
-        }
-      }
-    }
-
-    if (accel.z.abs() > (_thresholdBump * finalMultiplier) &&
-        !isDebounced('bump')) {
-      _lastTriggered['bump'] = now;
-      _enqueueEvent(EventType.bump, now);
-    }
-  }
-
-  // --- 库 B (Android 适配版): 专家引擎 ---
-  void _detectAutoEventsExpertAndroid(SensorData data) {
-    final now = DateTime.now();
-    // 1. 启动保护期校验 (前 5 秒不检测自动打标)
-    if (_recordingStartTime != null &&
-        now.difference(_recordingStartTime!) < _startProtectionDuration) {
-      return;
-    }
-
-    // 2. 专家级滤波：获取平滑后的数据 (由 SensorEngine 的级联滤波矩阵提供)
-    final accel = data.filteredAccel;
-
-    // 3. 动态能量评估与物理熔断 (归一化适配 Android 30Hz)
-    final recentPoints = _engine.getLookbackBuffer(1, targetHz: 30);
-    double totalJerkEnergy = 0;
-    double maxAngularRate = 0; // 新增：窗口内最大旋转角速度
-
-    if (recentPoints.length > 2) {
-      for (int i = 1; i < recentPoints.length; i++) {
-        // 计算相邻点的变化率矢量模长
-        final dA = (recentPoints[i].processedAccel -
-                recentPoints[i - 1].processedAccel)
-            .length;
-        totalJerkEnergy += dA;
-
-        // 跟踪最大旋转强度
-        final rotationStrength = recentPoints[i].processedGyro.length;
-        if (rotationStrength > maxAngularRate)
-          maxAngularRate = rotationStrength;
-      }
-    }
-
-    final double meanEnergy =
-        recentPoints.isNotEmpty ? totalJerkEnergy / recentPoints.length : 0;
-
-    double expertMultiplier = 1.0;
-
-    // --- 动态姿态守卫 (支架共振识别) ---
-    // 如果窗口内角速度过大 ( > 0.4 rad/s )，说明手机在支架上剧烈晃动，大幅提高门槛
-    if (maxAngularRate > 0.4) {
-      expertMultiplier *= 3.0; // 严重抖动：三倍压制
-    } else if (maxAngularRate > 0.2) {
-      expertMultiplier *= 1.5; // 轻微晃动：1.5倍压制
-    }
-
-    // 物理熔断门槛：如果点均能量超过 0.85，判定为极端环境
-    if (meanEnergy > 0.85) {
-      expertMultiplier *= 2.0;
-    }
-
-    // 4. 唤醒/异常跳变熔断 (Brake Spike Filter)
-    if (recentPoints.length >= 2) {
-      final instantJerk = (recentPoints.last.processedAccel -
-                  recentPoints[recentPoints.length - 2].processedAccel)
-              .length /
-          0.033;
-      if (instantJerk > 40.0) {
-        expertMultiplier = 5.0; // 封死由于传感器唤醒包产生的虚假信号
-      }
-    }
-
-    final baseMultiplier = _getFinalMultiplier();
-    final finalMultiplier = baseMultiplier * expertMultiplier;
-
-    bool isDebounced(String type) {
-      final last = _lastTriggered[type];
-      return last != null && now.difference(last) < _debounceDuration;
-    }
-
-    // 5. 执行纵向检测 (带上专家倍率 + 硬性物理保底 + 轴间压制)
-    final currentSpeedKmh = (state.currentPosition?.speed ?? 0) * 3.6;
-
-    // 物理常识校验：低速下限制最大加速度阈值
-    // 如果速度低于 15km/h，除非角速度极低且轴向纯净，否则门槛不得低于 2.5G (防止支架点头)
-    double speedFloor = 1.8;
-    if (currentSpeedKmh < 15.0) {
-      speedFloor = 2.5;
-    }
-
-    final double currentAccelThreshold =
-        (_thresholdAccel * finalMultiplier).clamp(speedFloor, 15.0);
-    final double currentDecelThreshold =
-        (_thresholdDecel * finalMultiplier).clamp(-15.0, -speedFloor);
-
-    // 轴间相关性压制逻辑：
-    // 1. Z 轴耦合压制 (路面垂直抖动)
-    bool isVerticalSuppressed = accel.z.abs() > (accel.y.abs() * 1.5);
-    // 2. X 轴相关性压制 (支架左右横摆)
-    bool isHorizontalSuppressed = accel.x.abs() > (accel.y.abs() * 0.8);
-
-    if (accel.y < currentDecelThreshold && !isDebounced('rapidDeceleration')) {
-      if (!isVerticalSuppressed && !isHorizontalSuppressed) {
-        _lastTriggered['rapidDeceleration'] = now;
-        _enqueueEvent(EventType.rapidDeceleration, now);
-      }
-    } else if (accel.y > currentAccelThreshold &&
-        !isDebounced('rapidAcceleration')) {
-      if (!isVerticalSuppressed && !isHorizontalSuppressed) {
-        _lastTriggered['rapidAcceleration'] = now;
-        _enqueueEvent(EventType.rapidAcceleration, now);
-      }
-    }
-
-    // 6. 摆动检测：专家模式要求更严苛的零点交叉 (3次以上)
-    if (!isDebounced('wobble') && _xHistory.length > 20) {
-      double minX = 0;
-      double maxX = 0;
-      int crossCount = 0;
-      double? lastVal;
-      for (var entry in _xHistory) {
-        if (entry.value < minX) minX = entry.value;
-        if (entry.value > maxX) maxX = entry.value;
-        if (lastVal != null &&
-            ((lastVal <= 0 && entry.value > 0) ||
-                (lastVal >= 0 && entry.value < 0))) {
-          crossCount++;
-        }
-        lastVal = entry.value;
-      }
-
-      final span = maxX - minX;
-      // 专家模式：幅度 + 过零点 (左-右-左) + Z轴静默
-      if (span > (_thresholdWobbleSpan * finalMultiplier) &&
-          crossCount >= 3 &&
-          accel.z.abs() < 2.0) {
-        _lastTriggered['wobble'] = now;
-        _enqueueEvent(EventType.wobble, now);
-      }
-    }
-
-    // 7. 颠簸检测
-    if (accel.z.abs() > (_thresholdBump * finalMultiplier) &&
-        !isDebounced('bump')) {
-      _lastTriggered['bump'] = now;
-      _enqueueEvent(EventType.bump, now);
-    }
-  }
-
-  double _getFinalMultiplier() {
-    final sensitivity = _ref.read(settingsProvider).sensitivity;
-    double sensitivityMultiplier = 1.0;
-    if (sensitivity == SensitivityLevel.medium) sensitivityMultiplier = 0.8;
-    if (sensitivity == SensitivityLevel.high) sensitivityMultiplier = 0.6;
-
-    double speedMultiplier = 1.0;
-    final currentSpeedKmh = (state.currentPosition?.speed ?? 0) * 3.6;
-
-    if (currentSpeedKmh < 10.0) {
-      speedMultiplier = 0.8;
-    } else if (currentSpeedKmh < 60.0) {
-      speedMultiplier = 0.8 + 0.2 * ((currentSpeedKmh - 10.0) / 50.0);
-    } else if (currentSpeedKmh > 80.0) {
-      speedMultiplier = 1.2;
-    }
-    return sensitivityMultiplier * speedMultiplier;
-  }
-
-  // --- 聚合引擎核心逻辑 ---
-
-  /// 将事件放入缓冲区待定
-  void _enqueueEvent(EventType type, DateTime timestamp) {
+  Future<void> stopRecording() async {
     if (!state.isRecording) return;
 
-    _pendingEvents.add(_PendingEvent(
-      type: type,
-      timestamp: timestamp,
-      source: 'AUTO',
-      position: state.currentPosition,
-      speed: state.currentPosition?.speed ?? 0,
-    ));
+    // 🎥 如果启用了视频录制，停止视频录制服务
+    final settings = _ref.read(settingsProvider);
+    if (settings.isVideoRecordingEnabled) {
+      final videoService = _ref.read(videoRecordingServiceProvider);
+      final stopped = await videoService.stopRecording();
 
-    // 如果计时器没启动，则启动它 (第一个入队的事件决定了窗口起始)
-    _fusionTimer ??= Timer(_fusionWindow, _processPendingEvents);
-  }
-
-  /// 处理缓冲区中的待定事件
-  void _processPendingEvents() {
-    _fusionTimer = null;
-    if (_pendingEvents.isEmpty) return;
-
-    // 1. 优先级定义 (数值越小优先级越高)
-    final priority = {
-      EventType.rapidAcceleration: 1,
-      EventType.rapidDeceleration: 1,
-      EventType.jerk: 2,
-      EventType.bump: 3,
-      EventType.wobble: 4,
-    };
-
-    // 按照优先级排序
-    _pendingEvents.sort(
-        (a, b) => (priority[a.type] ?? 99).compareTo(priority[b.type] ?? 99));
-
-    // 2. 选取优先级最高的作为“主事件”
-    var mainEvent = _pendingEvents.first;
-
-    // 3. 执行特殊的物理规则校验 (如车速门槛)
-    final speedKmh = mainEvent.speed * 3.6;
-    var finalType = mainEvent.type;
-
-    if (finalType == EventType.rapidDeceleration && speedKmh < 5.0) {
-      // 场景：极低速下的剧烈减速信号，通常是停稳瞬间的“点头”或过坎
-      // 决策：将其修正为“顿挫 (Jerk)”，因为此时不具备“危险驾驶”的急刹性质
-      finalType = EventType.jerk;
+      if (stopped) {
+        debugPrint('[Recording] 🎥 Video recording stopped');
+      } else {
+        debugPrint('[Recording] ⚠️ Failed to stop video recording');
+      }
     }
 
-    // 4. 构建备注信息 (不再显示聚合特征，保持界面干净)
-    String? extraNotes;
-    // if (otherTypes.isNotEmpty) {
-    //   extraNotes = "聚合特征: ${otherTypes.join(', ')}";
-    // }
+    _sensorSub?.close();
+    _sensorSub = null;
 
-    // 5. 最终上报/落库
-    tagEvent(finalType, source: mainEvent.source, notes: extraNotes);
+    _engine.setRecording(false);
 
-    // 6. 清空缓冲区，等待下一轮
-    _pendingEvents.clear();
+    // 确保所有待写入的批量数据被flush
+    if (state.currentTrip != null) {
+      await _storage.flushPendingPoints(state.currentTrip!.id);
+    }
+
+    await _storage.endTrip(state.currentTrip!.id);
+    await WakelockPlus.disable();
+
+    // ✅ 完全清理所有状态，准备下一次行程
+    state = state.copyWith(
+      isRecording: false,
+      currentTrip: null,
+      trajectory: [], // 清空轨迹列表
+      events: [], // 清空事件列表
+      currentDistance: 0.0, // 重置里程
+      currentSpeed: 0.0, // 重置速度
+      maxGForce: 0.0, // 重置峰值G力
+      currentGForce: 0.0, // 重置当前G力
+      isInsActive: false, // 重置INS状态
+      lastInsLocation: null, // 清空INS位置
+    );
+
+    // ✅ 清理内部缓存变量
+    _lastValidGpsPosition = null;
+    _lastReliableGpsPosition = null;
+    _lastSensorRecordTime = null;
+    _latestSensorData = null;
+    _targetSpeed = 0.0;
+    _smoothedSpeed = 0.0;
+    _lastSpeedUpdate = null;
+
+    debugPrint('✅ [Recording] Stopped and cleaned up all state');
+  }
+
+  void clearAlert() {
+    debugPrint(
+        '[Recording] clearAlert called, current alertMessage: ${state.alertMessage}');
+    state = state.copyWith(alertMessage: null);
+    debugPrint('[Recording] alertMessage after clear: ${state.alertMessage}');
   }
 
   @override
   void dispose() {
+    _motionProcessor.dispose();
     _audioPlayer.dispose();
-    WidgetsBinding.instance.removeObserver(this);
     _positionSub?.cancel();
     _sensorSub?.close();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 }
@@ -1239,20 +808,3 @@ final recordingProvider =
   final storage = ref.watch(storageServiceProvider);
   return RecordingNotifier(engine, storage, ref);
 });
-
-/// 聚合引擎使用的待定事件实体
-class _PendingEvent {
-  final EventType type;
-  final DateTime timestamp;
-  final String source;
-  final Position? position;
-  final double speed;
-
-  _PendingEvent({
-    required this.type,
-    required this.timestamp,
-    required this.source,
-    this.position,
-    required this.speed,
-  });
-}
