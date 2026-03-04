@@ -41,7 +41,6 @@ dependencies:
   share_plus: ^10.1.4
   uuid: ^4.5.1
   wakelock_plus: ^1.2.11
-  ota_update: ^7.1.0
   flutter_svg: ^2.0.10+1
   pocketbase: ^0.23.0+1
   image_picker: ^1.1.2
@@ -49,7 +48,7 @@ dependencies:
   # Data Visualization & UI Components
   fl_chart: ^0.70.2
   smooth_page_indicator: ^1.2.0+1
-  flutter_secure_storage: ^10.0.0
+  flutter_secure_storage: ^9.0.0
 
 dev_dependencies:
   flutter_test:

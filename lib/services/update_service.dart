@@ -1,14 +1,14 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:ota_update/ota_update.dart';
 import 'package:puked/generated/l10n/app_localizations.dart';
 
+/// Web 平台简化的更新检查服务
+/// 仅显示更新提示，不提供自动下载
 class UpdateService {
-  static const String _owner = 'hkgood';
+  static const String _owner = 'kissggj123';
   static const String _repo = 'Puked';
   static const String _apiUrl =
       'https://api.github.com/repos/$_owner/$_repo/releases/latest';
@@ -24,20 +24,8 @@ class UpdateService {
         final data = json.decode(response.body);
         final latestTag = data['tag_name'] as String;
         final latestVersion = latestTag.replaceAll('v', '');
-        final releaseNotes = data['body'] as String;
+        final releaseNotes = data['body'] as String? ?? '';
         final htmlUrl = data['html_url'] as String;
-
-        String? apkUrl;
-        if (data['assets'] != null) {
-          final assets = data['assets'] as List;
-          final apkAsset = assets.firstWhere(
-            (asset) => (asset['name'] as String).endsWith('.apk'),
-            orElse: () => null,
-          );
-          if (apkAsset != null) {
-            apkUrl = apkAsset['browser_download_url'] as String;
-          }
-        }
 
         final packageInfo = await PackageInfo.fromPlatform();
         final currentVersion = packageInfo.version;
@@ -45,8 +33,7 @@ class UpdateService {
         if (_isNewer(latestVersion, currentVersion)) {
           if (context.mounted) {
             _showUpdateDialog(
-                context, latestTag, releaseNotes, apkUrl ?? htmlUrl, l10n,
-                isApk: apkUrl != null);
+                context, latestTag, releaseNotes, htmlUrl, l10n);
           }
         } else if (showNoUpdate) {
           if (context.mounted) {
@@ -86,8 +73,7 @@ class UpdateService {
   }
 
   static void _showUpdateDialog(BuildContext context, String version,
-      String notes, String url, AppLocalizations l10n,
-      {bool isApk = false}) {
+      String notes, String url, AppLocalizations l10n) {
     final isZh = l10n.localeName == 'zh';
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -173,14 +159,10 @@ class UpdateService {
                 child: ElevatedButton(
                   onPressed: () async {
                     Navigator.pop(context);
-                    if (Platform.isAndroid && isApk) {
-                      _showDownloadProgress(context, url, l10n, version);
-                    } else {
-                      final uri = Uri.parse(url);
-                      if (await canLaunchUrl(uri)) {
-                        await launchUrl(uri,
-                            mode: LaunchMode.externalApplication);
-                      }
+                    final uri = Uri.parse(url);
+                    if (await canLaunchUrl(uri)) {
+                      await launchUrl(uri,
+                          mode: LaunchMode.externalApplication);
                     }
                   },
                   style: ElevatedButton.styleFrom(
@@ -193,7 +175,7 @@ class UpdateService {
                     elevation: 0,
                   ),
                   child: Text(
-                    isZh ? '立即更新' : 'Update Now',
+                    isZh ? '查看更新' : 'View Update',
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                     ),
@@ -204,173 +186,6 @@ class UpdateService {
           ),
         ],
       ),
-    );
-  }
-
-  static void _showDownloadProgress(
-      BuildContext context, String url, AppLocalizations l10n, String version) {
-    final isZh = l10n.localeName == 'zh';
-    final colorScheme = Theme.of(context).colorScheme;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return AlertDialog(
-              backgroundColor: colorScheme.surface,
-              surfaceTintColor: Colors.transparent,
-              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-              contentPadding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24)),
-              title: Column(
-                children: [
-                  Text(
-                    isZh ? '正在下载更新' : 'Downloading Update',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    version,
-                    style: TextStyle(
-                      color: colorScheme.primary,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-              content: StreamBuilder<OtaEvent>(
-                stream: OtaUpdate().execute(
-                  url,
-                  destinationFilename: 'puked_update.apk',
-                  androidProviderAuthority:
-                      'com.osglab.puked.ota_update_provider',
-                ),
-                builder: (context, snapshot) {
-                  double progress = 0;
-                  String statusText = '';
-                  bool isError = false;
-
-                  if (snapshot.hasData) {
-                    switch (snapshot.data!.status) {
-                      case OtaStatus.DOWNLOADING:
-                        progress =
-                            double.tryParse(snapshot.data!.value ?? '0') ?? 0;
-                        statusText = isZh ? '正在下载...' : 'Downloading...';
-                        break;
-                      case OtaStatus.INSTALLING:
-                        statusText =
-                            isZh ? '正在准备安装...' : 'Preparing to install...';
-                        progress = 100;
-                        Future.delayed(const Duration(seconds: 1), () {
-                          if (context.mounted) Navigator.of(context).pop();
-                        });
-                        break;
-                      case OtaStatus.ALREADY_RUNNING_ERROR:
-                        statusText =
-                            isZh ? '已有下载任务正在运行' : 'Download already running';
-                        isError = true;
-                        break;
-                      case OtaStatus.PERMISSION_NOT_GRANTED_ERROR:
-                        statusText = isZh ? '缺少安装权限' : 'Permission not granted';
-                        isError = true;
-                        break;
-                      case OtaStatus.INTERNAL_ERROR:
-                      case OtaStatus.DOWNLOAD_ERROR:
-                      case OtaStatus.CHECKSUM_ERROR:
-                        statusText = isZh
-                            ? '下载失败，请稍后重试'
-                            : 'Download failed, please try again';
-                        isError = true;
-                        break;
-                      default:
-                        statusText = isZh ? '处理中...' : 'Processing...';
-                    }
-                  } else if (snapshot.hasError) {
-                    statusText = isZh
-                        ? '发生错误: ${snapshot.error}'
-                        : 'Error: ${snapshot.error}';
-                    isError = true;
-                  }
-
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(height: 8),
-                      Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: LinearProgressIndicator(
-                              value: progress / 100,
-                              minHeight: 12,
-                              backgroundColor:
-                                  colorScheme.surfaceContainerHighest,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                  colorScheme.primary),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            statusText,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: isError
-                                  ? Colors.red
-                                  : colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                          Text(
-                            '${progress.toInt()}%',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                              color: colorScheme.primary,
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (isError)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 24),
-                          child: SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton(
-                              onPressed: () => Navigator.pop(context),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: colorScheme.errorContainer,
-                                foregroundColor: colorScheme.onErrorContainer,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                elevation: 0,
-                              ),
-                              child: Text(
-                                isZh ? '关闭' : 'Close',
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  );
-                },
-              ),
-            );
-          },
-        );
-      },
     );
   }
 }
