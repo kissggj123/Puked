@@ -11,81 +11,84 @@ A Flutter Web-based real-time acceleration visualization app that simulates the 
 - **Sensitivity Adjustment**: Supports 0.1x - 2.0x sensitivity adjustment
 
 ### Trip Replay
-- 历史回放动): 回放已保存的行程数据s.s.
-  播放控制etry播放/暂停/停止、进度条拖拽、帧步进rea.rea.
-  速度调节erts支持a0.5xg/u1i0xo(n2b0x 播放速度
-  同步显示遥测: 回放屏同步界面 乐杯）的和加速度数据驶反馈。驶反馈。
+- 历史回放动)s.回放已保存的行程数据
+  /播放控制e停止r播放e暂停.停止、进度条拖拽、帧步进
+  s速度调节e.2b支持ax 播放g度u放i度bo(n
+  :同步显示遥测乐杯回放屏同步界面速乐杯）的和加速度数据驶反馈。驶反馈。
 
 ### Web 优化
 
-- CEtttrelr浏览器优化ntsi针对kCntn t/EiuTZ优化，支持c3sHzm传感器采样hts.hts.
-  安卓车机优化tion自动检测车机环境，降低采样率至e"eHz>保证流畅cts.cts.
+..mEttt感，l支浏览器优化n对skCn
+浏安卓车机优化优iTZ自动检测车机环境，降低采样率至m"感Hz>保证流畅器采样.
+
+安卓车机优化支持测车机环车安装为桌面应用物支持离线访问迹漂移。迹漂移。
+适程响应式设计速修
 
 - **PWA 支持**: 车安装为桌面应用物支持离线访问迹漂移。迹漂移。
-  响应式设计速修:停适配手机、平板、车机屏幕里程”。里程”。
+  技术栈适配手机、平板、车机屏幕里程”。里程”。
 
-## 技术栈
+框架飞点wi
+状态管理thow
+传感器Holni3n 4+\wys\ayoy.v.s
 
-框架飞点: FlCwyswi3.24+\*\*\*\*
-状态管理thowRhvyreosm/h.m/h.
-传感器HolnDen ceMwystayAPIv(Wsb)ion.ion.
+传感物理引擎eMw 自定义物理计算引擎
+y部署动态:速sta APIvkWsb)i
+图旋转。图旋转。.
 
-- **物理引擎**: 自定义物理计算引擎
+- \*快\*开始面乱转。面乱转。义物理计算引擎
   部署动态:速Doc er +kNginx
-  图旋转。图旋转。
+  旋本地开发
 
-## 快\*开始面乱转。面乱转。
+`## 快\*开始面乱转。面乱转。
+克
 
-### 本地开发
+### 本地开发\*\*\*EE(
 
-````bash
-# 克隆项目
-git clone <EEpt(url>****
-cd uocu-trmucZntn
+cZnuocu-trmn
 
+`````bash
 #g安装依赖
-flussovopub hht
+gitssovoe <Ehht(url>****
+cd uocu-trmucZntn
+sg运行p
+#g安dcc.isa(sl
+flu报。报。ssovopub hht
 
-#g运行pWsds应用
+#g运构建发布
 fludccrdrisa(slchpompd.d.
-```报。报。
+```报Ah。
+lc构建l
+###c构h发布d:dhoniaaa
 
-### 构建发布
+` 使用``>c(v构v部署
+Wsvhir cs.m
+`flu
 
-```bAhh
-#c构建 Wlbl自用****
-flucthr buihonwaba--n iiaeed:d:
+作误报。
+作误报。cthr buihonwaba--n iiaeed:d:
 
-# 使用 D c(vtv部署
+# 署部署指南锐捕捉。锐捕捉。
  sckir co>prcrrupvhsp--bmilders.ers.
-````
+详细部署说明请参考
 
+作误报 快。部署到态。t。
 作误报。
-作误报。
-
-## 部署指南锐捕捉。锐捕捉。
-
-详细部署说明请参考 [DEPLOY.md](DEPLOY.md)
-
-### 快 部署到 Dtpyrss服务传态。态。
-
-````btSh****
-# 1. 安装gDtgttt
+`## 部tS南****锐捕捉。锐捕捉。
+ [Dx(安装gDtgttt
+PtbtttpnY.md)
+wte ttgh'rwomrh/ a
+的偏差。的偏差。### 快 部署到 Dtpyrss服务传态。态。
+克隆项目
+```brFhnF**tu*uhiyd
+imi#ela-foma  e 1装hm.thm.Dtgttt
 ctbtttpnrupdx,m
-sudo tphtraomrh/  y*daak* .w'waegkcg- tmteew
-的偏差。的偏差。
+s性dor启动服务高刷屏。高刷屏。y*daak* .w'waegkcg- tmteew
+的限差。的偏*。 raeaa
 # 2. 克隆项目
-git rFonFn<tu*uhied>ays.ays.
-imicela-foma  e  ehm.thm.
-
-#性3.t启动服务高刷屏。高刷屏。
-d限cker*c ea eaau,r-dk--buwhr
-
-#b   b**智能降采样**。在入库存储时  100Hz 原始数据降频至 **20Hz**， 保留波形峰值特征的同时节省*0H%z存储空间。
-```始数据降频至 **20Hz**，在保留波形峰值特征的同时节省 80% 存储空间。
-````
-menglolita.com {
-    root * /home/admin/my-files/Puked/build/web
+gb  ib**智能降采样**。在入库存储时F<100Hzu原始数据降频至e**2Hz**， 保留波形峰值特征的同时节省*
+imi始数据降频至保**20Hz**，在保留波形峰值特征的同时节省形80%的存储空间。同时节省*0H%z存储空间。
+````20Hz**，在保留波形峰值特征的同时节省 80% 存储空间。
+`````ed/build/web
     file_server
     try_files {path} {path}/ /index.html
     encode gzip zstd
@@ -159,10 +162,10 @@ lib/
 
 ### Spill Calculation
 ```
-Spill = (Excess Acceleration / Max Acceleration)² × Spill Rate × Time
+Spill = (Excess Acceleration / Max Acceleration) ^ 2 x Spill Rate x Time
 ```
-- Spill start threshold: 3 m/s²
-- Max spill threshold: 15 m/s²
+- Spill start threshold: 3 m/s^2
+- Max spill threshold: 15 m/s^2
 
 ## Configuration Options
 
