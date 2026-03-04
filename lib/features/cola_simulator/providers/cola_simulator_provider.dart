@@ -1,9 +1,9 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:puked/models/sensor_data.dart';
-import 'package:puked/features/recording/providers/sensor_provider.dart';
-import 'package:puked/features/cola_simulator/domain/physics_engine.dart';
+import 'package:vector_math/vector_math_64.dart';
+import 'package:puked/services/web_sensor_service.dart';
 
 /// 可乐杯模拟器状态
 class ColaSimulatorState {
@@ -31,8 +31,8 @@ class ColaSimulatorState {
     this.spillPercentage = 0.0,
     this.gForce = 0.0,
     this.sensitivity = 1.0,
-    this.accelDescription = '平稳',
-    this.spillDescription = '几乎没撒',
+    this.accelDescription = 'Stable',
+    this.spillDescription = 'Almost none',
     this.startTime,
     this.elapsedTime = Duration.zero,
   });
@@ -74,8 +74,8 @@ class ColaSimulatorState {
 class ColaSimulatorNotifier extends StateNotifier<ColaSimulatorState> {
   final Ref _ref;
   final ColaPhysicsEngine _physicsEngine;
-  StreamSubscription? _sensorSubscription;
   Timer? _updateTimer;
+  StreamSubscription<AccelData>? _sensorSubscription;
 
   ColaSimulatorNotifier(this._ref)
       : _physicsEngine = ColaPhysicsEngine(),
@@ -84,47 +84,9 @@ class ColaSimulatorNotifier extends StateNotifier<ColaSimulatorState> {
   }
 
   void _init() {
-    // 监听传感器数据
-    _sensorSubscription = _ref.read(sensorStreamProvider.stream).listen(
-      (sensorData) {
-        _onSensorData(sensorData);
-      },
-      onError: (error) {
-        debugPrint('Sensor stream error: $error');
-      },
-    );
-
-    // 启动更新定时器
     _updateTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       _updateElapsedTime();
     });
-  }
-
-  void _onSensorData(SensorData data) {
-    if (!state.isRunning) return;
-
-    // 提取加速度数据 (已处理过的)
-    final lateralAccel = data.processedAccel.x;
-    final longitudinalAccel = data.processedAccel.y;
-    final verticalAccel = data.processedAccel.z;
-
-    // 更新物理引擎
-    _physicsEngine.sensitivity = state.sensitivity;
-    _physicsEngine.update(lateralAccel, longitudinalAccel);
-
-    // 计算 G 值
-    final gForce = _physicsEngine.calculateGForce(lateralAccel, longitudinalAccel);
-
-    // 更新状态
-    state = state.copyWith(
-      lateralAccel: lateralAccel,
-      longitudinalAccel: longitudinalAccel,
-      verticalAccel: verticalAccel,
-      spillPercentage: _physicsEngine.spillPercentage,
-      gForce: gForce,
-      accelDescription: _physicsEngine.getAccelLevelDescription(gForce),
-      spillDescription: _physicsEngine.getSpillLevelDescription(_physicsEngine.spillPercentage),
-    );
   }
 
   void _updateElapsedTime() {
@@ -135,27 +97,38 @@ class ColaSimulatorNotifier extends StateNotifier<ColaSimulatorState> {
     }
   }
 
-  /// 请求传感器权限
+  void _onSensorData(AccelData data) {
+    if (!state.isRunning) return;
+
+    _physicsEngine.sensitivity = state.sensitivity;
+    _physicsEngine.update(data.lateral, data.longitudinal);
+
+    final gForce =
+        _physicsEngine.calculateGForce(data.lateral, data.longitudinal);
+
+    state = state.copyWith(
+      lateralAccel: data.lateral,
+      longitudinalAccel: data.longitudinal,
+      verticalAccel: data.vertical,
+      spillPercentage: _physicsEngine.spillPercentage,
+      gForce: gForce,
+      accelDescription: _physicsEngine.getAccelLevelDescription(gForce),
+      spillDescription: _physicsEngine
+          .getSpillLevelDescription(_physicsEngine.spillPercentage),
+    );
+  }
+
   Future<bool> requestPermission() async {
-    final controller = _ref.read(sensorServiceControllerProvider);
-    final granted = await controller.requestPermission();
-
-    if (granted) {
-      // 启动传感器服务
-      controller.start();
-    }
-
+    final service = _ref.read(webSensorServiceProvider);
+    final granted = await service.requestPermission();
     state = state.copyWith(hasPermission: granted);
     return granted;
   }
 
-  /// 开始模拟
   void startSimulation() {
     if (!state.hasPermission) {
       requestPermission().then((granted) {
-        if (granted) {
-          _start();
-        }
+        if (granted) _start();
       });
     } else {
       _start();
@@ -164,7 +137,10 @@ class ColaSimulatorNotifier extends StateNotifier<ColaSimulatorState> {
 
   void _start() {
     _physicsEngine.reset();
-    _ref.read(sensorServiceControllerProvider).start();
+    final service = _ref.read(webSensorServiceProvider);
+    service.start();
+
+    _sensorSubscription = service.accelStream.listen(_onSensorData);
 
     state = state.copyWith(
       isRunning: true,
@@ -174,95 +150,156 @@ class ColaSimulatorNotifier extends StateNotifier<ColaSimulatorState> {
     );
   }
 
-  /// 停止模拟
   void stopSimulation() {
-    _ref.read(sensorServiceControllerProvider).stop();
+    _sensorSubscription?.cancel();
+    _sensorSubscription = null;
+    _ref.read(webSensorServiceProvider).stop();
 
-    state = state.copyWith(
-      isRunning: false,
-    );
+    state = state.copyWith(isRunning: false);
   }
 
-  /// 重置模拟
   void resetSimulation() {
+    _sensorSubscription?.cancel();
+    _sensorSubscription = null;
+    _ref.read(webSensorServiceProvider).stop();
     _physicsEngine.reset();
 
-    state = state.copyWith(
-      isRunning: false,
-      lateralAccel: 0.0,
-      longitudinalAccel: 0.0,
-      verticalAccel: 0.0,
-      spillPercentage: 0.0,
-      gForce: 0.0,
-      elapsedTime: Duration.zero,
-      startTime: null,
-      accelDescription: '平稳',
-      spillDescription: '几乎没撒',
-    );
+    state = const ColaSimulatorState();
   }
 
-  /// 校准传感器
   Future<void> calibrate() async {
-    final controller = _ref.read(sensorServiceControllerProvider);
-    await controller.calibrate();
-
+    await _ref.read(webSensorServiceProvider).calibrate();
     state = state.copyWith(isCalibrated: true);
   }
 
-  /// 设置灵敏度
   void setSensitivity(double value) {
     state = state.copyWith(sensitivity: value.clamp(0.1, 2.0));
   }
 
   @override
   void dispose() {
-    _sensorSubscription?.cancel();
     _updateTimer?.cancel();
-    _ref.read(sensorServiceControllerProvider).stop();
+    _sensorSubscription?.cancel();
+    _ref.read(webSensorServiceProvider).stop();
     super.dispose();
   }
 }
 
-/// 可乐杯模拟器状态提供者
-final colaSimulatorProvider = StateNotifierProvider<ColaSimulatorNotifier, ColaSimulatorState>((ref) {
+final colaSimulatorProvider =
+    StateNotifierProvider<ColaSimulatorNotifier, ColaSimulatorState>((ref) {
   return ColaSimulatorNotifier(ref);
 });
 
-/// 加速度历史数据 (用于图表)
-final accelHistoryProvider = StateProvider<List<AccelDataPoint>>((ref) => []);
+/// 物理计算引擎
+class ColaPhysicsEngine {
+  static const double _gravity = 9.80665;
+  static const double _maxSpillAccel = 15.0;
+  static const double _spillThreshold = 3.0;
 
-/// 加速度数据点
-class AccelDataPoint {
-  final DateTime timestamp;
-  final double lateral;
-  final double longitudinal;
-  final double vertical;
+  double sensitivity;
+  final double maxTiltAngle;
+  final double spillRate;
 
-  AccelDataPoint({
-    required this.timestamp,
-    required this.lateral,
-    required this.longitudinal,
-    required this.vertical,
+  double _totalSpilled = 0.0;
+  double _currentSpillPercentage = 0.0;
+  DateTime _lastUpdate = DateTime.now();
+
+  final List<_Vec2> _accelHistory = [];
+  static const int _historySize = 5;
+
+  ColaPhysicsEngine({
+    this.sensitivity = 1.0,
+    this.maxTiltAngle = math.pi / 4,
+    this.spillRate = 0.5,
   });
-}
 
-/// 添加加速度数据到历史
-final addAccelHistoryProvider = Provider<Function>((ref) {
-  return (SensorData data) {
-    final history = ref.read(accelHistoryProvider);
-    final newPoint = AccelDataPoint(
-      timestamp: data.timestamp,
-      lateral: data.processedAccel.x,
-      longitudinal: data.processedAccel.y,
-      vertical: data.processedAccel.z,
-    );
+  void reset() {
+    _totalSpilled = 0.0;
+    _currentSpillPercentage = 0.0;
+    _accelHistory.clear();
+    _lastUpdate = DateTime.now();
+  }
 
-    final newHistory = [...history, newPoint];
-    // 只保留最近 300 个点 (约 10 秒 @ 30Hz)
-    if (newHistory.length > 300) {
-      newHistory.removeAt(0);
+  double get spillPercentage => _currentSpillPercentage.clamp(0.0, 1.0);
+
+  double update(double lateralAccel, double longitudinalAccel) {
+    final now = DateTime.now();
+    final dt = now.difference(_lastUpdate).inMilliseconds / 1000.0;
+    _lastUpdate = now;
+
+    _accelHistory.add(_Vec2(lateralAccel, longitudinalAccel));
+    if (_accelHistory.length > _historySize) {
+      _accelHistory.removeAt(0);
     }
 
-    ref.read(accelHistoryProvider.notifier).state = newHistory;
-  };
-});
+    final smoothedAccel = _calculateSmoothedAcceleration();
+    final accelMagnitude = smoothedAccel.length;
+    final tiltAngle = _calculateTiltAngle(smoothedAccel);
+
+    _calculateSpillage(accelMagnitude, dt);
+
+    return tiltAngle;
+  }
+
+  _Vec2 _calculateSmoothedAcceleration() {
+    if (_accelHistory.isEmpty) return _Vec2(0, 0);
+    double sumX = 0, sumY = 0;
+    for (final accel in _accelHistory) {
+      sumX += accel.x;
+      sumY += accel.y;
+    }
+    return _Vec2(sumX / _accelHistory.length, sumY / _accelHistory.length);
+  }
+
+  double _calculateTiltAngle(_Vec2 accel) {
+    if (accel.length < 0.1) return 0.0;
+    final accelAngle = math.atan2(accel.x, accel.y);
+    final tiltMagnitude = (accel.length * sensitivity * 0.1).clamp(0.0, 1.0);
+    return accelAngle * tiltMagnitude;
+  }
+
+  void _calculateSpillage(double accelMagnitude, double dt) {
+    if (accelMagnitude < _spillThreshold) return;
+
+    final excessAccel = accelMagnitude - _spillThreshold;
+    final normalizedExcess =
+        (excessAccel / (_maxSpillAccel - _spillThreshold)).clamp(0.0, 1.0);
+    final instantSpill = math.pow(normalizedExcess, 2) * spillRate * dt * 0.1;
+
+    _totalSpilled += instantSpill;
+    _totalSpilled = _totalSpilled.clamp(0.0, 1.0);
+    _currentSpillPercentage = _totalSpilled;
+  }
+
+  double calculateGForce(double lateralAccel, double longitudinalAccel) {
+    final accelMagnitude = math.sqrt(
+        lateralAccel * lateralAccel + longitudinalAccel * longitudinalAccel);
+    return accelMagnitude / _gravity;
+  }
+
+  String getAccelLevelDescription(double gForce) {
+    if (gForce < 0.1) return 'Stable';
+    if (gForce < 0.3) return 'Slight shake';
+    if (gForce < 0.5) return 'Noticeable shake';
+    if (gForce < 0.8) return 'Strong shake';
+    return 'Extreme shake';
+  }
+
+  String getSpillLevelDescription(double percentage) {
+    if (percentage < 0.05) return 'Almost none';
+    if (percentage < 0.2) return 'Small amount';
+    if (percentage < 0.4) return 'Partial spill';
+    if (percentage < 0.6) return 'Large spill';
+    if (percentage < 0.8) return 'Almost empty';
+    return 'Completely spilled';
+  }
+}
+
+class _Vec2 {
+  final double x;
+  final double y;
+
+  _Vec2(this.x, this.y);
+
+  double get length => math.sqrt(x * x + y * y);
+}

@@ -1,7 +1,7 @@
 
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:vector_math/vector_math_64.dart';
+import 'package:vector_math/vector_math_64.dart' hide Colors;
 
 /// 可乐杯可视化组件
 /// 显示一个装满可乐的杯子，根据加速度数据模拟液体倾斜和撒出效果

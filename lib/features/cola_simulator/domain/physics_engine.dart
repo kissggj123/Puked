@@ -11,7 +11,7 @@ class ColaPhysicsEngine {
   static const double _spillThreshold = 3.0; // 开始撒出的加速度阈值 (m/s²)
 
   // 配置参数
-  final double sensitivity; // 灵敏度 (0.0 - 2.0)
+  double sensitivity; // 灵敏度 (0.0 - 2.0)
   final double maxTiltAngle; // 最大倾斜角度 (弧度)
   final double spillRate; // 撒出速率系数
 

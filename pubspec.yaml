@@ -1,5 +1,5 @@
 name: puked
-description: 可乐杯物理模拟器 - 实时加速度可视化工具
+description: Cola Cup Physics Simulator - Real-time acceleration visualization tool
 version: 3.0.0+3000
 
 environment:
@@ -19,15 +19,11 @@ dependencies:
   sensors_plus: ^6.1.1
   geolocator: ^13.0.1
   
-  # NEW: Pure Dart Maps
+  # Maps
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
   
-  # Storage
-  isar: ^3.1.0+1
-  isar_flutter_libs: ^3.1.0+1
-  path_provider: ^2.1.5
-  path: ^1.9.0
+  # Storage (simplified for Web)
   shared_preferences: ^2.3.2
   
   # Utils & Math
@@ -35,27 +31,19 @@ dependencies:
   url_launcher: ^6.3.1
   package_info_plus: ^8.1.2
   vector_math: ^2.1.4
-  json_annotation: ^4.9.0
   intl: ^0.20.2
-  share_plus: ^10.1.4
   uuid: ^4.5.1
   wakelock_plus: ^1.2.11
   flutter_svg: ^2.0.10+1
-  pocketbase: ^0.23.0+1
-  image_picker: ^1.1.2
 
   # Data Visualization & UI Components
   fl_chart: ^0.70.2
   smooth_page_indicator: ^1.2.0+1
-  flutter_secure_storage: ^9.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
-  build_runner: ^2.4.8
-  isar_generator: ^3.1.0+1
-  json_serializable: ^6.7.1
   flutter_launcher_icons: ^0.13.1
   flutter_native_splash: ^2.4.0
 
@@ -79,4 +67,4 @@ flutter_native_splash:
   android_12:
     image: "assets/images/logo.png"
     color: "#ffffff"
-  fullscreen: true
+    fullscreen: true
