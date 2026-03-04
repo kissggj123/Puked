@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:js_interop';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -34,6 +35,8 @@ class WebSensorService {
   final List<Vector3> _recentReadings = [];
   static const int _calibrationSamples = 30;
 
+  JSFunction? _motionListener;
+
   /// 请求传感器权限 (iOS 13+ 需要)
   Future<bool> requestPermission() async {
     if (!kIsWeb) {
@@ -42,31 +45,22 @@ class WebSensorService {
     }
 
     try {
-      // iOS 13+ 需要显式请求权限
-      // 使用 JS 互操作请求权限
       _hasPermission = await _requestMotionPermission();
       return _hasPermission;
     } catch (e) {
       debugPrint('Permission request error: $e');
-      // 非 iOS 设备可能没有 requestPermission 方法
       _hasPermission = true;
       return true;
     }
   }
 
   Future<bool> _requestMotionPermission() async {
-    // 尝试请求 DeviceMotion 权限
-    // 在 iOS 13+ 上需要用户交互触发
     try {
       // 检查 DeviceMotionEvent 是否存在
       if (web.DeviceMotionEvent == null) {
         debugPrint('DeviceMotionEvent not available');
         return false;
       }
-      
-      // 尝试请求权限 (iOS 13+)
-      // 由于 package:web 可能没有 requestPermission 方法，
-      // 我们直接返回 true，让浏览器在需要时请求权限
       return true;
     } catch (e) {
       debugPrint('Motion permission error: $e');
@@ -86,12 +80,16 @@ class WebSensorService {
   }
 
   void _startWebSensors() {
-    // 添加 devicemotion 事件监听
-    web.window.addEventListener('devicemotion', _onDeviceMotion.toJS);
+    // 创建 JS 函数作为事件监听器
+    _motionListener = ((web.Event event) {
+      _handleDeviceMotion(event);
+    }).toJS;
+
+    web.window.addEventListener('devicemotion', _motionListener);
     debugPrint('DeviceMotion listener started');
   }
 
-  void _onDeviceMotion(web.Event event) {
+  void _handleDeviceMotion(web.Event event) {
     if (!_isRunning) return;
 
     final motionEvent = event as web.DeviceMotionEvent;
@@ -103,15 +101,10 @@ class WebSensorService {
     final y = accel.y?.toDouble() ?? 0.0;
     final z = accel.z?.toDouble() ?? 0.0;
 
-    // Web 坐标系转换:
-    // x: 左右 (右为正)
-    // y: 前后 (前为正) 
-    // z: 上下 (上为正)
-    // 转换为: lateral(横向), longitudinal(纵向), vertical(垂直)
-    
-    final lateral = x;  // 横向加速度
-    final longitudinal = y;  // 纵向加速度  
-    final vertical = z;  // 垂直加速度
+    // Web 坐标系转换
+    final lateral = x;
+    final longitudinal = y;
+    final vertical = z;
 
     // 保存最近读数用于校准
     _recentReadings.add(Vector3(lateral, longitudinal, vertical));
@@ -132,7 +125,6 @@ class WebSensorService {
   }
 
   void _startMockSensors() {
-    // 非 Web 平台使用模拟数据
     Timer.periodic(const Duration(milliseconds: 33), (timer) {
       if (!_isRunning) {
         timer.cancel();
@@ -159,15 +151,15 @@ class WebSensorService {
   void stop() {
     _isRunning = false;
     
-    if (kIsWeb) {
-      web.window.removeEventListener('devicemotion', _onDeviceMotion.toJS);
+    if (kIsWeb && _motionListener != null) {
+      web.window.removeEventListener('devicemotion', _motionListener);
+      _motionListener = null;
     }
   }
 
   Future<void> calibrate() async {
     if (_recentReadings.isEmpty) return;
 
-    // 计算平均偏移
     double sumX = 0, sumY = 0, sumZ = 0;
     for (final reading in _recentReadings) {
       sumX += reading.x;
