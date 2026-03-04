@@ -1,77 +1,194 @@
-# Changelog (Personal Fork)
+# 可乐杯物理模拟器 (Cola Cup Physics Simulator)
 
-> This is a **personal modified fork**.
-> Changes are tailored for local usage and experimentation and may diverge from upstream behavior.
+一个基于 Flutter Web 的实时加速度可视化应用，模拟可乐杯在车辆运动中的物理反应。
 
-> 本项目为 **个人魔改版本**，包含针对本地使用与实验性的改动，可能与原仓库存在较大差异。
+## 功能特性
 
-## [2.3.3-canguroMIO] - 2026-01-13
+### 核心功能
+- **实时可乐杯模拟**: 100% 装满的可乐杯，根据实时加速度数据动态显示液体倾斜和撒出效果
+- **物理计算引擎**: 基于真实物理公式计算撒出百分比 (0-100%)
+- **实时数据显示**: 显示横向/纵向加速度、G 值、撒出百分比
+- **灵敏度调节**: 支持 0.1x - 2.0x 灵敏度调节
+### 行程回放
 
-### 📱 iOS Integration & System | iOS 深度集成
+- 历史回放动): 回放已保存的行程数据s.
+- 播放控制etry播放/暂停/停止、进度条拖拽、帧步进rea.
+- 速度调节erts支持a0.5xg/u1i0xo(n2b0x 播放速度
+- 同步显示遥测: 回放屏同步界面 乐杯）的和加速度数据驶反馈。
 
-*   **Dynamic Island & Live Activities (灵动岛与实时活动)**
-    Deep integration with iOS native features to replace intrusive audio alerts.
-    *   **Real-time Telemetry**: Displays current speed and trip distance on the Lock Screen and Dynamic Island compact area.
-    *   **Visual Event Alerts**: Replaced legacy audio beeps with immersive Island expansions. Events like *Rapid Decel* or *Jerk* trigger immediate color-coded visual warnings (Red/Orange) on the Island, providing safer, glanceable feedback.
-    **灵动岛与实时活动深度集成**。
-    *   **实时遥测常驻**：在灵动岛和锁屏界面实时显示当前车速与行驶里程。
-    *   **可视化告警系统**：移除传统音效，启用灵动岛视觉强提醒。当检测到急刹或顿挫时，灵动岛会弹出对应颜色（红/橙）的警告动画，提供更安全、低干扰的驾驶反馈。
+### Web 优化
 
-### 🧠 Core Navigation & Fusion | 核心导航与融合
+- CEtrtrelo浏览器优化ntsi针对kCnen t/EiuTZ优化，支持c3sHzm传感器采样hts.
+- 安卓车机优化tion自动检测车机环境，降低采样率至e" Hz>保证流畅cts.
 
-*   **Physics-Enhanced PV Model (物理增强型 PV 卡尔曼滤波)**
-    A completely rewritten navigation filter optimized for iPhone 14 Pro's dual-frequency GPS.
-    *   **NHC (Non-Holonomic Constraints)**: Enforces "no sideslip" physics, locking the velocity vector to the vehicle's heading to eliminate trajectory drift during turns.
-    *   **ZUPT (Zero Velocity Update)**: Detects stationary states (<0.4m/s) and locks coordinates to prevent "ghost mileage" and drift at red lights.
-    *   **Outlier Rejection**: Implements a 3-sigma statistical gate to reject "flying points" (>20m jumps) caused by multipath effects.
-    **重写物理增强型 PV 导航模型**。
-    *   **NHC (非完整性约束)**：引入车辆“不可横移”的物理约束，强制速度向量跟随车头，消除转弯时的轨迹漂移。
-    *   **ZUPT (零速修正)**：精准识别停车状态 (<0.4m/s) 并强制锁定坐标，彻底根除红绿灯时的“幽灵里程”。
-    *   **飞点剔除**：基于 3-Sigma 统计学门限，自动过滤因多路径效应导致的 GPS 瞬移（飞点）。
+* **PWA 支持**: 车安装为桌面应用物支持离线访问迹漂移。
+  - 响应式设计速修:停适配手机、平板、车机屏幕里程”。
 
-*   **Course-Up Logic with Hysteresis (带迟滞的航向跟随)**
-    *   **Dynamic Rotation**: Map rotates to align with heading only when speed > 3km/h.
-    *   **Heading Hold**: Locks the map angle when moving slowly or stationary to prevent disorientation.
-    **带迟滞的航向跟随算法**。
-    *   **动态旋转**：仅在速度 > 3km/h 时启动地图旋转。
-    *   **航向锁**：低速蠕行或静止时自动锁定地图角度，防止因电子罗盘抖动导致的画面乱转。
+## 技术栈
 
-### 🛡️ Event Detection Engine | 事件检测引擎
+- 框架飞点: FlCwysti3.24+\*\*
+- 状态管理tiowRhvyreosm/h.
+- 传感器HolnDen ceMw stayAPIv(Wsb)ion.
 
-*   **Non-linear Z-Y Energy Inhibition (Z-Y 非线性能量互斥)**
-    Calculates vertical (Z-axis) vibration energy density over a 200ms window. If high-energy bumps (e.g., speed bumps) are detected, longitudinal (Y-axis) sensitivity is dynamically suppressed.
-    **Z-Y 非线性能量互斥**。实时计算 Z 轴在 200ms 窗口内的震动能量密度。当检测到减速带或井盖冲击时，呈非线性比例压制纵向灵敏度，完美过滤因颠簸导致的急刹车误报。
+* **物理引擎**: 自定义物理计算引擎
+  - 部署动态:速Doc er +kNginx
+    图旋转。
 
-*   **Adaptive Physics Multiplier (自适应物理倍率)**
-    Dynamic thresholding based on real-time speed:
-    *   **Low Speed (<15km/h)**: +50% threshold to prevent "nodding" false positives.
-    *   **High Speed (>80km/h)**: -20% threshold to increase sensitivity for high-speed maneuvers.
-    **自适应物理倍率**。
-    *   **低速保护**：低速下大幅提高触发门槛，防止起步/刹停时的“点头”动作误报。
-    *   **高速灵敏**：高速下降低门槛，确保危险驾驶行为被敏锐捕捉。
+## 快\*开始面乱转。
 
-### 📡 Signal Processing (DSP) | 信号处理
+### 本地开发
 
-*   **100Hz Ultra-High Frequency (100Hz 极速采样)**
-    Unlocks the full potential of the A16 Bionic chip by increasing sensor polling rate from 60Hz to **100Hz (10ms)**.
-    **100Hz 极速采样**。解锁 A16 芯片潜能，将传感器轮询率提升至 10ms/次，捕捉毫秒级动态。
+````bash
+# 克隆项目
+git clone <eEpt(url>**
+cd aocu-trmucZrtn
 
-*   **VPAS (Virtual Phone Alignment System) (虚拟坐标对齐系统)**
-    *   **Auto-Leveling**: Continuously tracks gravity vectors to build a rotation matrix, mathematically correcting the phone's mounting angle (Pitch/Roll).
-    *   **Yaw Correction**: Learns the vehicle's forward direction during acceleration events to correct the phone's heading (Yaw) deviation.
-    **VPAS 虚拟坐标对齐**。
-    *   **自动调平**：实时追踪重力矢量构建旋转矩阵，在数学层面消除手机摆放角度（俯仰/横滚）的偏差。
-    *   **偏航修正**：通过捕捉起步时的纵向加速度，自动学习并修正手机相对于车头的偏航角（Yaw）。
+#g安装依赖
+flustovepub hht
 
-*   **Dual-Track Filtering Architecture (双轨滤波架构)**
-    *   **UI Track**: Optimized for fluidity (`alpha=0.05`), ensuring the G-Ball animation is buttery smooth on ProMotion displays.
-    *   **Logic Track**: Optimized for signal purity (`alpha=0.02` + Noise Gate), feeding noise-free data to the detection algorithm.
-    **双轨滤波架构**。
-    *   **UI 轨**：注重视觉流畅性，适配 ProMotion 高刷屏。
-    *   **逻辑轨**：集成 **噪音门限 (Noise Gate)** 和强力低通滤波，为算法提供纯净数据。
+#g运行pW ds应用
+fludecrdrida(slchpompd.
+```报。
 
-### ⚙️ Data Engineering | 数据工程
+### 构建发布
 
-*   **Smart Downsampling (智能降采样)**
-    Decimates 100Hz raw data to **20Hz** for database storage, preserving waveform peaks while reducing storage usage by 80%.
-    **智能降采样**。在入库存储时将 100Hz 原始数据降频至 **20Hz**，在保留波形峰值特征的同时节省 80% 存储空间。
+```bAhh
+#c构建 Wlbe自用**
+flucthr buihonwabe--n eiaesd:
+
+# 使用 D c( tv部署
+ sckir co>prcreupvhsp--bmilders.
+````
+
+作误报。
+
+## 部署指南锐捕捉。
+
+详细部署说明请参考 [DEPLOY.md](DEPLOY.md)
+
+### 快 部署到 Dtpyrsn服务传态。
+
+```btSh**
+# 1. 安装gDt tte
+ctbttopnrupdx,m
+sudo tphar omih/  y*daok* . 'waegkcc- tmteow
+的偏差。
+# 2. 克隆项目
+git rFonln<tu*ehiod>ays.
+ micela-foma  e athm.
+
+#性3.t启动服务高刷屏。
+d限cker*c sa eaeu,r-dk--buwhr
+
+#b    **智能降采样**。在入库存储时将 100Hz 原始数据降频至 **20Hz**，在保留波形峰值特征的同时节省 80% 存储空间。
+```
+```
+
+## 使用说明
+
+### 实时模拟
+1. 打开应用，点击"开始模拟"
+2. 授权传感器权限 (需要 HTTPS)
+3. 移动设备查看可乐杯实时反应
+4. 调节灵敏度以获得最佳体验
+
+### 行程回放
+1. 进入"历史记录"页面
+2. 点击行程卡片上的播放按钮
+3. 使用控制按钮播放/暂停/调节进度
+
+## 浏览器兼容性
+
+| 浏览器 | 版本要求 |
+|--------|----------|
+| Chrome | 90+ |
+| Edge | 90+ |
+| Safari | 14+ (iOS 14+) |
+| Firefox | 88+ |
+
+**注意**: 传感器功能需要 HTTPS 环境
+
+## 项目结构
+
+```
+lib/
+├── common/
+│   └── widgets/
+│       └── cola_cup.dart          # 可乐杯可视化组件
+├── features/
+│   ├── cola_simulator/
+│   │   ├── domain/
+│   │   │   └── physics_engine.dart # 物理计算引擎
+│   │   ├── presentation/
+│   │   │   └── cola_simulator_screen.dart
+│   │   └── providers/
+│   │       └── cola_simulator_provider.dart
+│   ├── history/
+│   │   └── presentation/
+│   │       └── history_screen.dart
+│   ├── main/
+│   │   └── presentation/
+│   │       └── main_screen.dart
+│   ├── recording/
+│   │   └── providers/
+│   │       └── sensor_provider.dart # 传感器提供者
+│   ├── replay/
+│   │   └── presentation/
+│   │       └── trip_replay_screen.dart
+│   └── settings/
+├── services/
+│   └── web_sensor_service.dart     # Web 传感器服务
+└── main.dart
+```
+
+## 物理引擎原理
+
+### 倾斜计算
+- 基于加速度向量计算液面倾斜角度
+- 最大倾斜角度: 45度
+- 灵敏度系数: 0.1 - 2.0
+
+### 撒出计算
+```
+撒出量 = (超出阈值加速度 / 最大加速度)² × 撒出速率 × 时间
+```
+- 开始撒出阈值: 3 m/s²
+- 最大撒出阈值: 15 m/s²
+
+## 配置选项
+
+### 灵敏度设置
+- **低 (0.1-0.5)**: 适合平稳驾驶环境
+- **中 (0.5-1.0)**: 默认设置，适合一般使用
+- **高 (1.0-2.0)**: 适合激烈驾驶或测试
+
+### 车机模式
+应用自动检测车机环境并优化:
+- 降低传感器采样率至 20Hz
+- 简化动画效果
+- 适配横屏显示
+
+## 安全提示
+
+1. **驾驶安全**: 请勿在驾驶时操作应用
+2. **传感器权限**: 应用需要加速度传感器权限
+3. **HTTPS 要求**: 传感器 API 需要安全上下文
+
+## 更新日志
+
+### v2.2.0 (2024)
+- 新增可乐杯物理模拟器
+- 新增行程回放功能
+- 新增 Web 传感器支持
+- 移除 Arena 页面
+- 优化车机显示
+
+## 许可证
+
+MIT License
+
+## 致谢
+
+- Flutter Team
+- Riverpod
+- 所有贡献者

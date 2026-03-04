@@ -1,12 +1,12 @@
 {
-    "name": "Puked",
-    "short_name": "Puked",
+    "name": "可乐杯物理模拟器",
+    "short_name": "可乐杯模拟器",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#1a1a2e",
+    "theme_color": "#248A3D",
+    "description": "实时加速度可视化可乐杯物理模拟器",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {
@@ -30,6 +30,24 @@
             "sizes": "512x512",
             "type": "image/png",
             "purpose": "maskable"
+        }
+    ],
+    "categories": ["utilities", "entertainment"],
+    "screenshots": [],
+    "shortcuts": [
+        {
+            "name": "开始模拟",
+            "short_name": "模拟",
+            "description": "开始可乐杯物理模拟",
+            "url": "/#/recording",
+            "icons": [{"src": "icons/Icon-192.png", "sizes": "192x192"}]
+        },
+        {
+            "name": "历史记录",
+            "short_name": "历史",
+            "description": "查看历史行程记录",
+            "url": "/#/history",
+            "icons": [{"src": "icons/Icon-192.png", "sizes": "192x192"}]
         }
     ]
 }

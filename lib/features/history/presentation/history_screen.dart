@@ -6,6 +6,7 @@ import 'package:puked/services/storage/storage_service.dart';
 import 'package:puked/models/db_models.dart';
 import 'package:puked/common/utils/i18n.dart';
 import 'package:puked/features/history/presentation/trip_detail_screen.dart';
+import 'package:puked/features/replay/presentation/trip_replay_screen.dart';
 import 'package:puked/common/widgets/brand_logo.dart';
 import 'package:puked/services/cloud_trip_service.dart';
 import 'package:puked/features/auth/providers/auth_provider.dart';
@@ -52,8 +53,10 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
         title: Row(
           children: [
-            Icon(Icons.delete_outline,
-                color: Theme.of(context).colorScheme.error),
+            Icon(
+              Icons.delete_outline,
+              color: Theme.of(context).colorScheme.error,
+            ),
             const SizedBox(width: 12),
             Text(
               i18n.t('delete_trips'),
@@ -66,8 +69,10 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
           ],
         ),
         content: Text(
-          i18n.t('delete_trips_confirm',
-              args: [_selectedIds.length.toString()]),
+          i18n.t(
+            'delete_trips_confirm',
+            args: [_selectedIds.length.toString()],
+          ),
           style: TextStyle(
             fontSize: 15,
             height: 1.5,
@@ -92,15 +97,15 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Theme.of(context)
-                  .colorScheme
-                  .errorContainer
-                  .withValues(alpha: 0.8),
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.errorContainer.withValues(alpha: 0.8),
               foregroundColor: Theme.of(context).colorScheme.onErrorContainer,
               elevation: 0,
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14)),
+                borderRadius: BorderRadius.circular(14),
+              ),
             ),
             child: Text(
               i18n.t('delete'),
@@ -136,9 +141,9 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                 final cloudService = ref.read(cloudTripServiceProvider);
                 final storage = ref.read(storageServiceProvider);
 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(i18n.t('syncing'))),
-                );
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(i18n.t('syncing'))));
 
                 final cloudUuids = await cloudService.getUploadedLocalUuids();
                 final syncedCount = await storage.syncTripsStatus(cloudUuids);
@@ -148,8 +153,9 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
 
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text(i18n
-                        .t('sync_complete', args: [syncedCount.toString()])),
+                    content: Text(
+                      i18n.t('sync_complete', args: [syncedCount.toString()]),
+                    ),
                     backgroundColor: Colors.green,
                   ),
                 );
@@ -171,8 +177,12 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                           context: context,
                           builder: (context) => AlertDialog(
                             title: Text(i18n.t('submit_trip')),
-                            content: Text(i18n.t('bulk_upload_confirm',
-                                args: [_selectedIds.length.toString()])),
+                            content: Text(
+                              i18n.t(
+                                'bulk_upload_confirm',
+                                args: [_selectedIds.length.toString()],
+                              ),
+                            ),
                             actions: [
                               TextButton(
                                 onPressed: () => Navigator.pop(context, false),
@@ -194,17 +204,21 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
 
                           int successCount = 0;
                           final storage = ref.read(storageServiceProvider);
-                          final cloudService =
-                              ref.read(cloudTripServiceProvider);
+                          final cloudService = ref.read(
+                            cloudTripServiceProvider,
+                          );
 
                           for (final id in _selectedIds) {
                             try {
                               final trip = await storage.getTripById(id);
                               if (trip != null && !trip.isUploaded) {
-                                final cloudId =
-                                    await cloudService.uploadTrip(trip);
+                                final cloudId = await cloudService.uploadTrip(
+                                  trip,
+                                );
                                 await storage.updateTripCloudId(
-                                    trip.id, cloudId);
+                                  trip.id,
+                                  cloudId,
+                                );
                                 successCount++;
                               } else if (trip != null && trip.isUploaded) {
                                 successCount++; // Already uploaded counts as success for bulk selection
@@ -217,13 +231,15 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                           if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text(successCount == _selectedIds.length
-                                  ? i18n.t('upload_success')
-                                  : i18n.t('upload_failed')),
+                              content: Text(
+                                successCount == _selectedIds.length
+                                    ? i18n.t('upload_success')
+                                    : i18n.t('upload_failed'),
+                              ),
                               backgroundColor:
                                   successCount == _selectedIds.length
-                                      ? Colors.green
-                                      : Colors.orange,
+                                  ? Colors.green
+                                  : Colors.orange,
                             ),
                           );
 
@@ -238,10 +254,11 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                 child: Text(
                   i18n.t('upload'),
                   style: TextStyle(
-                      color: _selectedIds.isEmpty
-                          ? Colors.grey
-                          : Theme.of(context).colorScheme.primary,
-                      fontWeight: FontWeight.bold),
+                    color: _selectedIds.isEmpty
+                        ? Colors.grey
+                        : Theme.of(context).colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             TextButton(
@@ -249,10 +266,11 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
               child: Text(
                 "${i18n.t('delete')} (${_selectedIds.length})",
                 style: TextStyle(
-                    color: _selectedIds.isEmpty
-                        ? Colors.grey
-                        : Theme.of(context).colorScheme.error,
-                    fontWeight: FontWeight.bold),
+                  color: _selectedIds.isEmpty
+                      ? Colors.grey
+                      : Theme.of(context).colorScheme.error,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
             IconButton(
@@ -260,7 +278,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
               onPressed: _toggleDeleteMode,
               color: Theme.of(context).colorScheme.onSurface,
             ),
-          ]
+          ],
         ],
         scrolledUnderElevation: 0,
       ),
@@ -338,10 +356,10 @@ class _TripCard extends ConsumerWidget {
         borderRadius: BorderRadius.circular(16),
         border: isSelected
             ? Border.all(
-                color: Theme.of(context)
-                    .colorScheme
-                    .primary
-                    .withValues(alpha: 0.5))
+                color: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: 0.5),
+              )
             : null,
       ),
       child: ClipRRect(
@@ -349,12 +367,14 @@ class _TripCard extends ConsumerWidget {
         child: Material(
           color: Colors.transparent,
           child: InkWell(
-            onTap: onTap ??
+            onTap:
+                onTap ??
                 () {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                        builder: (context) => TripDetailScreen(trip: trip)),
+                      builder: (context) => TripDetailScreen(trip: trip),
+                    ),
                   ).then((_) => onRefresh?.call());
                 },
             child: Padding(
@@ -392,7 +412,8 @@ class _TripCard extends ConsumerWidget {
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 17,
-                                color: Theme.of(context).brightness ==
+                                color:
+                                    Theme.of(context).brightness ==
                                         Brightness.dark
                                     ? Colors.white.withValues(alpha: 0.95)
                                     : Theme.of(context).colorScheme.onSurface,
@@ -403,20 +424,22 @@ class _TripCard extends ConsumerWidget {
                               Container(
                                 margin: const EdgeInsets.only(left: 8),
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 2),
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
                                 decoration: BoxDecoration(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .primary
-                                      .withValues(alpha: 0.15),
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primary.withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: Text(
                                   trip.softwareVersion!,
                                   style: TextStyle(
                                     fontSize: 11,
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
@@ -427,8 +450,9 @@ class _TripCard extends ConsumerWidget {
                         Text(
                           dateStr,
                           style: TextStyle(
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
                             fontSize: 13,
                           ),
                         ),
@@ -438,39 +462,43 @@ class _TripCard extends ConsumerWidget {
                           alignment: Alignment.centerLeft,
                           child: Row(
                             children: [
-                              Icon(Icons.event_note_outlined,
-                                  size: 12,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .outline
-                                      .withValues(alpha: 0.6)),
+                              Icon(
+                                Icons.event_note_outlined,
+                                size: 12,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.outline.withValues(alpha: 0.6),
+                              ),
                               const SizedBox(width: 4),
                               Text(
-                                i18n.t('events_count',
-                                    args: [trip.eventCount.toString()]),
+                                i18n.t(
+                                  'events_count',
+                                  args: [trip.eventCount.toString()],
+                                ),
                                 style: TextStyle(
-                                    fontSize: 12,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .outline
-                                        .withValues(alpha: 0.6)),
+                                  fontSize: 12,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.outline.withValues(alpha: 0.6),
+                                ),
                               ),
                               const SizedBox(width: 12),
-                              Icon(Icons.straighten_outlined,
-                                  size: 12,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .outline
-                                      .withValues(alpha: 0.6)),
+                              Icon(
+                                Icons.straighten_outlined,
+                                size: 12,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.outline.withValues(alpha: 0.6),
+                              ),
                               const SizedBox(width: 4),
                               Text(
                                 "${(trip.distance / 1000).toStringAsFixed(2)} km",
                                 style: TextStyle(
-                                    fontSize: 12,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .outline
-                                        .withValues(alpha: 0.6)),
+                                  fontSize: 12,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.outline.withValues(alpha: 0.6),
+                                ),
                               ),
                             ],
                           ),
@@ -508,8 +536,9 @@ class _TripCard extends ConsumerWidget {
                                     context: context,
                                     builder: (context) => AlertDialog(
                                       title: Text(i18n.t('submit_trip')),
-                                      content:
-                                          Text(i18n.t('submit_trip_confirm')),
+                                      content: Text(
+                                        i18n.t('submit_trip_confirm'),
+                                      ),
                                       actions: [
                                         TextButton(
                                           onPressed: () =>
@@ -529,7 +558,8 @@ class _TripCard extends ConsumerWidget {
                                     if (!context.mounted) return;
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
-                                          content: Text(i18n.t('uploading'))),
+                                        content: Text(i18n.t('uploading')),
+                                      ),
                                     );
                                     try {
                                       final cloudId = await ref
@@ -542,31 +572,37 @@ class _TripCard extends ConsumerWidget {
                                       onRefresh?.call();
 
                                       if (!context.mounted) return;
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         SnackBar(
-                                          content:
-                                              Text(i18n.t('upload_success')),
+                                          content: Text(
+                                            i18n.t('upload_success'),
+                                          ),
                                           backgroundColor: Colors.green,
                                         ),
                                       );
                                     } catch (e) {
                                       if (!context.mounted) return;
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         SnackBar(
-                                          content:
-                                              Text(i18n.t('upload_failed')),
+                                          content: Text(
+                                            i18n.t('upload_failed'),
+                                          ),
                                           backgroundColor: Colors.red,
                                         ),
                                       );
                                     }
                                   }
                                 },
-                                icon: Icon(Icons.cloud_upload_outlined,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurface),
+                                icon: Icon(
+                                  Icons.cloud_upload_outlined,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurface,
+                                ),
                                 style: IconButton.styleFrom(
                                   backgroundColor: Theme.of(context)
                                       .colorScheme
@@ -576,6 +612,32 @@ class _TripCard extends ConsumerWidget {
                               ),
                             ),
                     const SizedBox(width: 8), // 增加一点间距
+                    // 回放按钮
+                    SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  TripReplayScreen(tripId: trip.uuid),
+                            ),
+                          );
+                        },
+                        icon: const Icon(
+                          Icons.play_circle_outline,
+                          color: Colors.green,
+                        ),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.green.withOpacity(0.1),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     SizedBox(
                       width: 40,
                       height: 40,
@@ -585,20 +647,22 @@ class _TripCard extends ConsumerWidget {
                         onPressed: () async {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                                content: Text(i18n.t('exporting')),
-                                duration: const Duration(seconds: 1)),
+                              content: Text(i18n.t('exporting')),
+                              duration: const Duration(seconds: 1),
+                            ),
                           );
                           await ref
                               .read(exportServiceProvider)
                               .exportTrip(trip);
                         },
-                        icon: Icon(Icons.share_outlined,
-                            color: Theme.of(context).colorScheme.onSurface),
+                        icon: Icon(
+                          Icons.share_outlined,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
                         style: IconButton.styleFrom(
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .onSurface
-                              .withValues(alpha: 0.05),
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withOpacity(0.05),
                         ),
                       ),
                     ),

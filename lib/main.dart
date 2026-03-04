@@ -8,7 +8,6 @@ import 'package:puked/features/settings/providers/settings_provider.dart';
 import 'package:puked/services/pocketbase_service.dart';
 import 'package:puked/services/storage/storage_service.dart';
 import 'package:puked/services/metadata_sync_service.dart';
-import 'package:puked/features/arena/providers/arena_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
@@ -19,9 +18,7 @@ void main() async {
 
   // 初始化 ProviderContainer
   final container = ProviderContainer(
-    overrides: [
-      sharedPreferencesProvider.overrideWithValue(prefs),
-    ],
+    overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
   );
 
   await container.read(storageServiceProvider).init();
@@ -30,20 +27,15 @@ void main() async {
   container.read(metadataSyncServiceProvider).syncBrandsFromCloud();
 
   runApp(
-    UncontrolledProviderScope(
-      container: container,
-      child: const PukedApp(),
-    ),
+    UncontrolledProviderScope(container: container, child: const PukedApp()),
   );
 
-// 将耗时的初始化移到后台执行，避免阻塞 iOS 渲染
+  // 将耗时的初始化移到后台执行，避免阻塞 iOS 渲染
   Future.microtask(() async {
     try {
       await container.read(storageServiceProvider).init();
       // 启动后尝试同步元数据
       await container.read(metadataSyncServiceProvider).syncBrandsFromCloud();
-      // 主动触发一次 Arena 数据加载
-      await container.read(arenaCloudTripsProvider.notifier).refresh();
     } catch (e) {
       debugPrint('Initialization error: $e');
     }
@@ -87,10 +79,7 @@ class _PukedAppState extends ConsumerState<PukedApp> {
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      supportedLocales: const [
-        Locale('zh'),
-        Locale('en'),
-      ],
+      supportedLocales: const [Locale('zh'), Locale('en')],
       locale: settings.locale,
 
       // 主题配置
@@ -137,8 +126,9 @@ class _PukedAppState extends ConsumerState<PukedApp> {
         cardTheme: CardThemeData(
           color: Colors.white,
           elevation: 0,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
         ),
       ),
 
@@ -164,8 +154,9 @@ class _PukedAppState extends ConsumerState<PukedApp> {
           secondary: Color(0xFF0A84FF), // Apple Blue Dark
           surface: Color(0xFF1C1C1E), // Apple System Gray 6 Dark
           onSurface: Color(0xFFF2F2F7),
-          surfaceContainerHighest:
-              Color(0xFF2C2C2E), // Apple System Gray 4 Dark
+          surfaceContainerHighest: Color(
+            0xFF2C2C2E,
+          ), // Apple System Gray 4 Dark
           onSurfaceVariant: Color(0xFFE5E5EA), // 显著加亮次要文字 (Apple System Gray 4)
           outlineVariant: Color(0xFF3A3A3C), // Apple System Gray 3 Dark
         ),
@@ -185,14 +176,17 @@ class _PukedAppState extends ConsumerState<PukedApp> {
           bodyLarge: TextStyle(color: Color(0xFFF2F2F7)),
           bodyMedium: TextStyle(color: Color(0xFFF2F2F7)),
           bodySmall: TextStyle(color: Color(0xFFE5E5EA)), // 次要文字使用较亮的灰色
-          labelSmall:
-              TextStyle(color: Color(0xFFE5E5EA), fontWeight: FontWeight.w600),
+          labelSmall: TextStyle(
+            color: Color(0xFFE5E5EA),
+            fontWeight: FontWeight.w600,
+          ),
         ),
         cardTheme: CardThemeData(
           color: const Color(0xFF1C1C1E),
           elevation: 0,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
         ),
       ),
 

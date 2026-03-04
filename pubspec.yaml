@@ -1,6 +1,6 @@
 name: puked
-description: A sophisticated tool for autonomous driving PMs to record ride comfort.
-version: 2.1.1+2115
+description: 可乐杯物理模拟器 - 实时加速度可视化工具
+version: 3.0.0+3000
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
