@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
+  throw UnimplementedError('sharedPreferencesProvider must be overridden');
+});
+
 final settingsProvider =
     StateNotifierProvider<SettingsNotifier, SettingsState>((ref) {
-  return SettingsNotifier();
+  return SettingsNotifier(ref.read(sharedPreferencesProvider));
 });
 
 enum SensitivityLevel { low, medium, high }
@@ -50,7 +54,9 @@ class SettingsState {
 }
 
 class SettingsNotifier extends StateNotifier<SettingsState> {
-  SettingsNotifier() : super(SettingsState()) {
+  final SharedPreferences _prefs;
+
+  SettingsNotifier(this._prefs) : super(SettingsState()) {
     _loadSettings();
   }
 
@@ -62,25 +68,23 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   static const _softwareVersionKey = 'softwareVersion';
   static const _fullscreenKey = 'fullscreenMode';
 
-  Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    final themeIndex = prefs.getInt(_themeKey) ?? 0;
+  void _loadSettings() {
+    final themeIndex = _prefs.getInt(_themeKey) ?? 0;
     final themeMode = ThemeMode.values.firstWhere(
       (mode) => mode.index == themeIndex,
       orElse: () => ThemeMode.system,
     );
 
-    final localeCode = prefs.getString(_localeKey);
+    final localeCode = _prefs.getString(_localeKey);
     final locale = localeCode != null ? Locale(localeCode) : null;
 
-    final sensitivityIndex = prefs.getInt(_sensitivityKey) ?? 2;
+    final sensitivityIndex = _prefs.getInt(_sensitivityKey) ?? 2;
     final sensitivity = SensitivityLevel.values[sensitivityIndex.clamp(0, 2)];
 
-    final brand = prefs.getString(_brandKey);
-    final carModel = prefs.getString(_carModelKey);
-    final softwareVersion = prefs.getString(_softwareVersionKey);
-    final fullscreenMode = prefs.getBool(_fullscreenKey) ?? false;
+    final brand = _prefs.getString(_brandKey);
+    final carModel = _prefs.getString(_carModelKey);
+    final softwareVersion = _prefs.getString(_softwareVersionKey);
+    final fullscreenMode = _prefs.getBool(_fullscreenKey) ?? false;
 
     state = SettingsState(
       themeMode: themeMode,
@@ -94,24 +98,21 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_themeKey, mode.index);
+    await _prefs.setInt(_themeKey, mode.index);
     state = state.copyWith(themeMode: mode);
   }
 
   Future<void> setLocale(Locale? locale) async {
-    final prefs = await SharedPreferences.getInstance();
     if (locale != null) {
-      await prefs.setString(_localeKey, locale.languageCode);
+      await _prefs.setString(_localeKey, locale.languageCode);
     } else {
-      await prefs.remove(_localeKey);
+      await _prefs.remove(_localeKey);
     }
     state = state.copyWith(locale: locale);
   }
 
   Future<void> setSensitivity(SensitivityLevel level) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_sensitivityKey, level.index);
+    await _prefs.setInt(_sensitivityKey, level.index);
     state = state.copyWith(sensitivity: level);
   }
 
@@ -120,11 +121,10 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     String? carModel,
     String? softwareVersion,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (brand != null) await prefs.setString(_brandKey, brand);
-    if (carModel != null) await prefs.setString(_carModelKey, carModel);
+    if (brand != null) await _prefs.setString(_brandKey, brand);
+    if (carModel != null) await _prefs.setString(_carModelKey, carModel);
     if (softwareVersion != null) {
-      await prefs.setString(_softwareVersionKey, softwareVersion);
+      await _prefs.setString(_softwareVersionKey, softwareVersion);
     }
     state = state.copyWith(
       brand: brand ?? state.brand,
@@ -134,16 +134,14 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   }
 
   Future<void> setFullscreenMode(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_fullscreenKey, enabled);
+    await _prefs.setBool(_fullscreenKey, enabled);
     state = state.copyWith(fullscreenMode: enabled);
   }
 
   Future<void> clearVehicleSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_brandKey);
-    await prefs.remove(_carModelKey);
-    await prefs.remove(_softwareVersionKey);
+    await _prefs.remove(_brandKey);
+    await _prefs.remove(_carModelKey);
+    await _prefs.remove(_softwareVersionKey);
     state = state.copyWith(
       brand: null,
       carModel: null,
