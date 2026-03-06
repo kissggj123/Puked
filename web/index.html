@@ -4170,9 +4170,28 @@
                 }
                 map = new AMap.Map('map', {
                   zoom: 16,
-                  viewMode: '2D',
+                  viewMode: '3D',
                   showLabel: true,
-                  mapStyle: 'amap://styles/dark'
+                  // 使用自定义图层：卫星图 + 路网
+                  layers: [
+                    // 🟢 Layer 1: 高德卫星底图 (style=6)
+                    new AMap.TileLayer({
+                      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}',
+                      subdomains: ['1', '2', '3', '4'],
+                      maxZoom: 18,
+                      minZoom: 3,
+                      tileSize: 256
+                    }),
+                    // 🟢 Layer 2: 高德透明路网 (style=8)
+                    new AMap.TileLayer({
+                      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}',
+                      subdomains: ['1', '2', '3', '4'],
+                      maxZoom: 18,
+                      minZoom: 3,
+                      tileSize: 256,
+                      opacity: 1
+                    })
+                  ]
                 })
               } catch (err) {
                 log.error('地图初始化失败:', err)
@@ -4583,7 +4602,27 @@
                   doubleClickZoom: true,
                   scrollWheel: true,
                   keyboardEnable: false,
-                  mapStyle: 'amap://styles/dark'
+                  viewMode: '3D',
+                  // 使用自定义图层：卫星图 + 路网
+                  layers: [
+                    // 🟢 Layer 1: 高德卫星底图 (style=6)
+                    new AMap.TileLayer({
+                      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=6&x={x}&y={y}&z={z}',
+                      subdomains: ['1', '2', '3', '4'],
+                      maxZoom: 18,
+                      minZoom: 3,
+                      tileSize: 256
+                    }),
+                    // 🟢 Layer 2: 高德透明路网 (style=8)
+                    new AMap.TileLayer({
+                      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&style=8&x={x}&y={y}&z={z}',
+                      subdomains: ['1', '2', '3', '4'],
+                      maxZoom: 18,
+                      minZoom: 3,
+                      tileSize: 256,
+                      opacity: 1
+                    })
+                  ]
                 })
                 log.debug('[回放地图] ✅ 地图实例创建成功')
 
