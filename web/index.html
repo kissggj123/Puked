@@ -5,12 +5,13 @@
   <meta charset="UTF-8">
   <meta name="viewport"
     content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>洒了么 - 辅助驾驶舒适度评测工具</title>
+  <title>可乐模拟器 - PRTS 终端</title>
   <style>
     [v-cloak] {
       display: none !important
     }
   </style>
+  <link rel="stylesheet" href="prts_styles.css">
   <script>
     window.__DEBUG_LOG__ = false;
     window.__LOG_BUF__ = [];
@@ -25,7 +26,7 @@
 
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="洒了么">
+  <meta name="apple-mobile-web-app-title" content="可乐模拟器">
   <link rel="apple-touch-icon" href="icons/icon-192x192.png?v=5">
   <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-192x192.png?v=5">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-96x96.png?v=5">
@@ -212,7 +213,7 @@
         }
         var s = document.createElement('script');
         s.src = vueSrc;
-        s.onload = function () { whenReady(function () { tryRunApp() || console.warn('[洒了么] Vue 已加载但 runApp 未定义，请确认 home.html 已更新'); }); };
+        s.onload = function () { whenReady(function () { tryRunApp() || console.warn('[可乐模拟器] Vue 已加载但 runApp 未定义，请确认 home.html 已更新'); }); };
         s.onerror = function () {
           whenReady(function () {
             var app = document.getElementById('app');
@@ -223,7 +224,7 @@
         whenReady(function () {
           setTimeout(function () {
             var app = document.getElementById('app');
-            if (app && app.innerHTML.indexOf('{{') !== -1 && tryRunApp()) console.log('[洒了么] 兜底启动成功');
+            if (app && app.innerHTML.indexOf('{{') !== -1 && tryRunApp()) console.log('[可乐模拟器] 兜底启动成功');
           }, 200);
         });
       })();
@@ -4960,8 +4961,8 @@
         var app = document.getElementById('app');
         var msg = (e && e.message ? String(e.message) : '未知错误');
         if (app) app.innerHTML = '<div style="color:#fff;padding:24px;text-align:center;font-size:14px;">页面初始化失败：' + msg + '</div>';
-        console.error('[洒了么] 应用挂载失败', e);
-        if (e && e.stack) console.error('[洒了么] 堆栈（含行号）:', e.stack);
+        console.error('[可乐模拟器] 应用挂载失败', e);
+        if (e && e.stack) console.error('[可乐模拟器] 堆栈（含行号）:', e.stack);
       }
     };
     if (typeof Vue !== 'undefined') setTimeout(function () {
@@ -4970,7 +4971,34 @@
     }, 150);
   </script>
   <script src="https://webapi.amap.com/maps?v=2.0&key=557fdddec8b3e1073dabefe50c620bfd"></script>
+  <script>
+    // 高德地图加载检测
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        if (typeof AMap === 'undefined') {
+          console.error('[地图] 高德地图 SDK 加载失败!');
+        } else {
+          console.log('[地图] 高德地图 SDK 加载成功:', AMap);
+        }
+      }, 2000);
+    });
+  </script>
   <style>
+    :root {
+      --prt-black: #0a0a0a;
+      --prt-dark: #1a1a1a;
+      --prt-gray: #2d2d2d;
+      --prt-cyan: #00f0ff;
+      --prt-blue: #1976D2;
+      --prt-orange: #ff9800;
+      --prt-warning: #ffc107;
+      --prt-red: #f44336;
+      --prt-danger: #8b0000;
+      --prt-white: #ffffff;
+      --prt-text: #cccccc;
+      --prt-chamfer: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% calc(100% - 8px), calc(100% - 8px) 100%, 8px 100%, 0 calc(100% - 8px), 0 0);
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -4978,12 +5006,44 @@
     }
 
     body {
-      font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #000;
-      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'Roboto Mono', monospace;
+      background: var(--prt-black);
+      background-image:
+        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+      background-size: 30px 30px;
+      color: var(--prt-white);
       min-height: 100vh;
       -webkit-font-smoothing: antialiased;
       overscroll-behavior-y: none;
+      position: relative;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(to bottom,
+          rgba(0, 240, 255, 0) 50%,
+          rgba(0, 240, 255, 0.02) 50%);
+      background-size: 100% 4px;
+      pointer-events: none;
+      z-index: 9999;
+      animation: scanline 8s linear infinite;
+    }
+
+    @keyframes scanline {
+      0% {
+        transform: translateY(-100%);
+      }
+
+      100% {
+        transform: translateY(100vh);
+      }
     }
 
     .container {
@@ -4991,6 +5051,25 @@
       max-width: 600px;
       margin: 0 auto;
       padding-bottom: 100px;
+    }
+
+    .prt-card {
+      background: rgba(26, 26, 26, 0.9);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+      clip-path: var(--prt-chamfer);
+      position: relative;
+    }
+
+    .prt-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border: 1px solid transparent;
+      border-image: linear-gradient(135deg, var(--prt-cyan), transparent, var(--prt-blue)) 1;
+      pointer-events: none;
     }
 
     #map,
@@ -5828,9 +5907,10 @@
                   <div class="calibration-handle-outer"></div>
                 </div>
               </div>
-              <h1 style="font-size: 24px; font-weight: 300; color: #fff; letter-spacing: 2px; margin: 0 0 8px;">洒了么</h1>
+              <h1 style="font-size: 24px; font-weight: 300; color: #fff; letter-spacing: 2px; margin: 0 0 8px;">可乐模拟器
+              </h1>
               <div style="color: rgba(255,255,255,0.5); font-size: 12px; letter-spacing: 1px; margin-bottom: 24px;">
-                辅助驾驶舒适度评测工具 (可乐版)</div>
+                由 CanguroMIO 呈现</div>
               <button type="button" @click="handleHomeButtonClick" class="home-primary-btn">
                 {{ homeButtonText }}
               </button>
@@ -5838,10 +5918,9 @@
             <div style="flex: 1; min-height: 20px;"></div>
           </div>
 
-          <div v-if="page === 'home'" @click="openPrivacyStatement"
-            style="position: fixed; bottom: 0; left: 0; right: 0; height: 72px; padding: 12px 20px calc(env(safe-area-inset-bottom, 0px) + 12px); text-align: center; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,0.5); letter-spacing: 0.5px; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; z-index: 50; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;">
-            <span>点击同意授权代表您已同意<span style="color: #1976D2; text-decoration: underline;">《隐私政策》</span>，</span>
-            <span>如不同意请勿开启测评</span>
+          <div v-if="page === 'home'"
+            style="position: fixed; bottom: 0; left: 0; right: 0; padding: calc(env(safe-area-inset-bottom, 0px) + 12px); text-align: center; font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.3); letter-spacing: 0.5px; box-sizing: border-box; z-index: 50;">
+            <span>由 CanguroMIO 呈现</span>
           </div>
 
           <div v-else-if="page === 'placePhoneGuide'" class="place-phone-guide-page" @touchmove.prevent>
@@ -5851,9 +5930,26 @@
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </button>
-            <div class="place-phone-guide-video-wrap">
-              <img src="/guide/phone-flat.gif?v=6" alt="请将手机平放于充电位"
-                style="width:100%;height:100%;object-fit:contain;display:block;" />
+            <div class="place-phone-guide-video-wrap"
+              style="width:100%;max-width:300px;height:200px;margin:0 auto 20px;display:flex;align-items:center;justify-content:center;">
+              <div style="position:relative;width:120px;height:200px;">
+                <!-- 手机轮廓 -->
+                <div
+                  style="position:absolute;top:0;left:0;right:0;bottom:0;border:3px solid #1976D2;border-radius:12px;box-shadow:0 0 20px rgba(25,118,210,0.5);">
+                </div>
+                <!-- 屏幕 -->
+                <div
+                  style="position:absolute;top:8px;left:8px;right:8px;bottom:8px;background:rgba(25,118,210,0.1);border-radius:6px;">
+                </div>
+                <!-- 水平线表示平放 -->
+                <div
+                  style="position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);width:160px;height:2px;background:#1976D2;opacity:0.5;">
+                </div>
+                <!-- 箭头指示 -->
+                <div
+                  style="position:absolute;bottom:-45px;left:50%;transform:translateX(-50%);color:#1976D2;font-size:20px;">
+                  ⬇</div>
+              </div>
             </div>
             <div class="place-phone-guide-inner">
               <h2 class="place-phone-guide-title">请将手机平放于充电位</h2>
@@ -6871,7 +6967,7 @@
           style="flex: 1; overflow-y: auto; color: rgba(255,255,255,0.85); font-size: 13px; line-height: 1.6; padding-right: 8px;">
           <p style="margin: 0 0 12px;">本隐私政策于2026年3月2日发布并生效。</p>
           <p style="margin: 0 0 12px;">
-            本隐私政策适用于小鹏汽车（简称「我们」）向用户（或称「您」）提供的辅助驾驶舒适度评测工具（即「洒了么」，以下简称为「本工具」）。当您填写、提交相关信息前，请您务必仔细阅读本政策，了解我们如何收集、使用、存储、共享与保护您的个人信息及您的权利。<strong>如您选择主动参与或提交相关信息，即表示您已充分理解并同意接受本政策。</strong>
+            本隐私政策适用于小鹏汽车（简称「我们」）向用户（或称「您」）提供的辅助驾驶舒适度评测工具（即「可乐模拟器」，以下简称为「本工具」）。当您填写、提交相关信息前，请您务必仔细阅读本政策，了解我们如何收集、使用、存储、共享与保护您的个人信息及您的权利。<strong>如您选择主动参与或提交相关信息，即表示您已充分理解并同意接受本政策。</strong>
           </p>
           <p style="margin: 0 0 12px;">
             我们收集和处理信息会因具体产品/服务场景而有所不同，如果我们具体的产品/服务有对应的隐私政策，请您查阅该特定隐私政策，以帮助您更好地保护您的个人信息。如对本政策有任何疑问、意见或建议，您可通过本政策提供的联系方式与我们联系。
