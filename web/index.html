@@ -4220,7 +4220,38 @@
               if (marker) {
                 marker.setPosition([lng, lat])
               } else {
-                marker = new AMap.Marker({ position: [lng, lat] })
+                // 创建像素风格小兔子图标
+                const rabbitIcon = new AMap.Icon({
+                  size: new AMap.Size(32, 32),
+                  image: 'data:image/svg+xml;utf8,' + encodeURIComponent(`
+                    <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                      <!-- 兔子身体 -->
+                      <rect x="10" y="14" width="12" height="12" fill="#1976D2"/>
+                      <!-- 兔子头部 -->
+                      <rect x="11" y="8" width="10" height="8" fill="#1976D2"/>
+                      <!-- 左耳朵 -->
+                      <rect x="12" y="4" width="3" height="5" fill="#1976D2"/>
+                      <!-- 右耳朵 -->
+                      <rect x="17" y="4" width="3" height="5" fill="#1976D2"/>
+                      <!-- 左眼睛 -->
+                      <rect x="13" y="10" width="2" height="2" fill="#00f0ff"/>
+                      <!-- 右眼睛 -->
+                      <rect x="17" y="10" width="2" height="2" fill="#00f0ff"/>
+                      <!-- 鼻子 -->
+                      <rect x="15" y="13" width="2" height="1" fill="#ff9800"/>
+                      <!-- 阴影/底座 -->
+                      <ellipse cx="16" cy="27" rx="8" ry="2" fill="rgba(25,118,210,0.3)"/>
+                    </svg>
+                  `),
+                  anchor: 'bottom-center',
+                  origin: 'center center'
+                });
+
+                marker = new AMap.Marker({
+                  position: [lng, lat],
+                  icon: rabbitIcon,
+                  offset: new AMap.Pixel(-16, -32)
+                })
                 map.add(marker)
               }
               map.setCenter([lng, lat])
@@ -4652,13 +4683,37 @@
                 playbackMapInstance.add(playbackPolylinePassed)
                 addPlaybackLog('已行驶轨迹已创建')
 
-                playbackCarMarker = new AMap.CircleMarker({
-                  center: new AMap.LngLat(startPos.lng, startPos.lat),
-                  radius: 5,
-                  fillColor: '#00d4ff',
-                  fillOpacity: 1,
-                  strokeColor: '#00d4ff',
-                  strokeWeight: 2,
+                // 创建像素风格小兔子图标用于回放
+                const playbackRabbitIcon = new AMap.Icon({
+                  size: new AMap.Size(32, 32),
+                  image: 'data:image/svg+xml;utf8,' + encodeURIComponent(`
+                    <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                      <!-- 兔子身体 -->
+                      <rect x="10" y="14" width="12" height="12" fill="#00d4ff"/>
+                      <!-- 兔子头部 -->
+                      <rect x="11" y="8" width="10" height="8" fill="#00d4ff"/>
+                      <!-- 左耳朵 -->
+                      <rect x="12" y="4" width="3" height="5" fill="#00d4ff"/>
+                      <!-- 右耳朵 -->
+                      <rect x="17" y="4" width="3" height="5" fill="#00d4ff"/>
+                      <!-- 左眼睛 -->
+                      <rect x="13" y="10" width="2" height="2" fill="#00f0ff"/>
+                      <!-- 右眼睛 -->
+                      <rect x="17" y="10" width="2" height="2" fill="#00f0ff"/>
+                      <!-- 鼻子 -->
+                      <rect x="15" y="13" width="2" height="1" fill="#ff9800"/>
+                      <!-- 阴影/底座 -->
+                      <ellipse cx="16" cy="27" rx="8" ry="2" fill="rgba(0,212,255,0.3)"/>
+                    </svg>
+                  `),
+                  anchor: 'bottom-center',
+                  origin: 'center center'
+                });
+
+                playbackCarMarker = new AMap.Marker({
+                  position: [startPos.lng, startPos.lat],
+                  icon: playbackRabbitIcon,
+                  offset: new AMap.Pixel(-16, -32),
                   zIndex: 100
                 })
                 playbackMapInstance.add(playbackCarMarker)
@@ -5115,6 +5170,16 @@
     #playbackMap {
       width: 100%;
       height: 100%;
+    }
+
+    /* 像素风格小兔子定位图标 */
+    .pixel-rabbit-marker {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      image-rendering: pixelated;
+      image-rendering: -moz-crisp-edges;
+      image-rendering: crisp-edges;
     }
 
     .amap-logo,
