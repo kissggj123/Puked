@@ -302,9 +302,16 @@ function initVueApp() {
       });
 
       // 生命周期
-      onMounted(() => {
+      onMounted(async () => {
+        // 等待 DOM 渲染
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
         // 初始化 Three.js
-        ThreeEngine.init();
+        const container = document.getElementById('three-container');
+        if (container && window.ThreeEngine) {
+          ThreeEngine.init(container);
+          ThreeEngine.startAnimation();
+        }
         
         // 初始化 IndexedDB
         Storage.initDB();
