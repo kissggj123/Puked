@@ -558,6 +558,263 @@
       color: var(--anime-text-dim);
       margin: 8px 0;
     }
+
+    /* 专业仪表盘样式 */
+    .professional-dashboard {
+      background: rgba(0, 0, 0, 0.8);
+    }
+
+    .dashboard-section {
+      margin-bottom: 20px;
+    }
+
+    .dashboard-section h3 {
+      font-size: 14px;
+      color: var(--anime-text-dim);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .event-count {
+      font-size: 12px;
+      opacity: 0.6;
+    }
+
+    .dashboard-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .dashboard-card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .dashboard-card:first-child {
+      flex: 0 0 120px;
+    }
+
+    .dashboard-card:last-child {
+      flex: 1;
+    }
+
+    /* 地图 */
+    .map-container {
+      position: relative;
+      height: 180px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #1a1a1a;
+    }
+
+    .map {
+      width: 100%;
+      height: 100%;
+    }
+
+    .map-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.8);
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 14px;
+    }
+
+    /* 惯性球 */
+    .inertial-ball {
+      width: 90px;
+      height: 90px;
+      border: 1px solid #444;
+      border-radius: 50%;
+      margin: 0 auto;
+      position: relative;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.08) 0%, transparent 70%);
+    }
+
+    .crosshair-h {
+      position: absolute;
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: #444;
+    }
+
+    .crosshair-v {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: #444;
+    }
+
+    .ball {
+      width: 12px;
+      height: 12px;
+      background: var(--anime-blue);
+      border-radius: 50%;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transition: transform 0.1s;
+      box-shadow: 0 0 10px rgba(25, 118, 210, 0.5);
+    }
+
+    /* 图表 */
+    .chart-container {
+      margin-bottom: 12px;
+    }
+
+    .chart-container:last-child {
+      margin-bottom: 0;
+    }
+
+    .chart-label {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.5);
+      margin-bottom: 4px;
+    }
+
+    .chart {
+      width: 100%;
+      height: 45px;
+      background: rgba(25, 118, 210, 0.1);
+      border-radius: 6px;
+      border: 1px solid rgba(25, 118, 210, 0.2);
+    }
+
+    /* 统计网格 */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+
+    .stat-item {
+      text-align: center;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.5);
+      margin-bottom: 6px;
+      letter-spacing: 1px;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: 300;
+      color: #fff;
+      font-family: 'SF Mono', monospace;
+    }
+
+    .stat-value-danger {
+      color: #F44336;
+    }
+
+    .stat-unit {
+      font-size: 11px;
+      opacity: 0.5;
+    }
+
+    /* 事件列表 */
+    .event-list {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .event-item {
+      padding: 12px;
+      border-left: 3px solid;
+      margin-bottom: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 4px;
+    }
+
+    .event-item.severe {
+      border-color: #8B0000;
+    }
+
+    .event-item.moderate {
+      border-color: #F44336;
+    }
+
+    .event-item.light {
+      border-color: #FF9800;
+    }
+
+    .event-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+
+    .event-type {
+      font-weight: 500;
+      color: #fff;
+    }
+
+    .event-severity {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      color: white;
+    }
+
+    .event-item.severe .event-severity {
+      background: #8B0000;
+    }
+
+    .event-item.moderate .event-severity {
+      background: #F44336;
+    }
+
+    .event-item.light .event-severity {
+      background: #FF9800;
+    }
+
+    .event-desc {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.7);
+      margin-bottom: 4px;
+    }
+
+    .event-time {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.4);
+    }
+
+    /* 响应式 */
+    @media (max-width: 768px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .dashboard-row {
+        flex-direction: column;
+      }
+
+      .dashboard-card:first-child {
+        flex: 1;
+      }
+    }
   </style>
 
   <!-- Favicon -->
@@ -594,6 +851,8 @@
   <script src="js/sensor_service.js"></script>
   <script src="js/event_detector.js"></script>
   <script src="js/three_engine.js"></script>
+  <script src="js/gps_filter.js"></script>
+  <script src="js/professional_dashboard.js"></script>
   <script src="js/app.js"></script>
 </head>
 
@@ -726,6 +985,87 @@
           <p>由 CanguroMIO 呈现</p>
         </div>
       </div>
+
+      <!-- 专业仪表盘页面 -->
+      <div v-if="currentPage === 'professional'" class="page-container glass professional-dashboard">
+        <div class="page-header">
+          <h2>🎛️ 专业仪表盘</h2>
+          <button class="btn-small" @click="switchViewMode">切换视图</button>
+        </div>
+
+        <!-- 地图轨迹 -->
+        <div class="dashboard-section">
+          <h3>地图轨迹</h3>
+          <div class="map-container">
+            <div id="map" class="map"></div>
+            <div v-if="!hasGPS" class="map-overlay">等待 GPS 定位...</div>
+          </div>
+        </div>
+
+        <!-- 惯性球和波形图 -->
+        <div class="dashboard-row">
+          <!-- 惯性球 -->
+          <div class="dashboard-card">
+            <h3>惯性球</h3>
+            <div class="inertial-ball">
+              <div class="crosshair-h"></div>
+              <div class="crosshair-v"></div>
+              <div class="ball" :style="{ transform: `translate(${accBallX}px, ${accBallY}px)` }"></div>
+            </div>
+          </div>
+
+          <!-- 波形图 -->
+          <div class="dashboard-card">
+            <h3>加速度波形</h3>
+            <div class="chart-container">
+              <div class="chart-label">纵向</div>
+              <canvas ref="longChart" class="chart"></canvas>
+            </div>
+            <div class="chart-container">
+              <div class="chart-label">横向</div>
+              <canvas ref="latChart" class="chart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- 行驶统计 -->
+        <div class="dashboard-section">
+          <div class="stats-grid">
+            <div class="stat-item">
+              <div class="stat-label">录制时长</div>
+              <div class="stat-value">{{ formatTime(duration) }}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">实时速度</div>
+              <div class="stat-value">{{ speed.toFixed(0) }}<span class="stat-unit">km/h</span></div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">行驶里程</div>
+              <div class="stat-value">{{ distance.toFixed(2) }}<span class="stat-unit">km</span></div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">不良体验</div>
+              <div class="stat-value stat-value-danger">{{ events.length }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 事件列表 -->
+        <div class="dashboard-section">
+          <h3>不良体验事件 <span class="event-count">共 {{ events.length }} 次</span></h3>
+          <div class="event-list">
+            <div v-for="e in recentEvents" :key="e.id" class="event-item" :class="e.severityClass">
+              <div class="event-header">
+                <span class="event-type">{{ formatEventType(e.type) }}</span>
+                <span class="event-severity">{{ e.severity }} - {{ e.level }}分</span>
+              </div>
+              <div class="event-desc">{{ e.desc }}</div>
+              <div class="event-time">{{ formatTimeAgo(e.timestamp) }}</div>
+            </div>
+            <div v-if="events.length === 0" class="empty-state">暂无不良体验事件</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 底部控制栏 -->
@@ -734,6 +1074,7 @@
       <button class="btn" @click="stopSimulation" :disabled="!isRunning">⏹ 停止</button>
       <button class="btn" @click="toggleFullscreen">⛶ 全屏</button>
       <button class="btn" @click="toggleSidePanel">📊 数据</button>
+      <button class="btn" @click="switchViewMode">{{ viewMode === 'simple' ? '专业仪表盘' : '您的可乐' }}</button>
     </div>
 
     <!-- 侧边抽屉菜单 -->

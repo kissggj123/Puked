@@ -11,7 +11,8 @@ const AppState = {
   showSidePanel: false,
   selectedSimulator: 'cola',
   qualitySetting: 'high',
-  sensitivity: 1.0
+  sensitivity: 1.0,
+  viewMode: 'simple' // 'simple' or 'professional'
 };
 
 // 传感器数据
@@ -39,7 +40,9 @@ const CurrentSession = {
   maxG: 0,
   avgG: 0,
   events: [],
-  sensorData: []
+  sensorData: [],
+  gpsFilter: null,
+  lastGpsPosition: null
 };
 
 // 历史记录
@@ -64,6 +67,7 @@ function initVueApp() {
       const selectedSimulator = ref(AppState.selectedSimulator);
       const qualitySetting = ref(AppState.qualitySetting);
       const sensitivity = ref(AppState.sensitivity);
+      const viewMode = ref(AppState.viewMode);
 
       // 传感器数据
       const sensorData = reactive(SensorData);
@@ -72,6 +76,14 @@ function initVueApp() {
       const smoothScore = ref(CalculatedData.smoothScore);
       const events = ref(CalculatedData.events);
       const historyRecords = ref(HistoryRecords);
+
+      // 专业仪表盘状态
+      const accBallX = ref(0);
+      const accBallY = ref(0);
+      const duration = ref(0);
+      const distance = ref(0);
+      const speed = ref(0);
+      const hasGPS = ref(false);
 
       // 配置选项
       const simulators = [
@@ -186,6 +198,34 @@ function initVueApp() {
         ThreeEngine.setQuality(quality);
       };
 
+      const switchViewMode = () => {
+        if (viewMode.value === 'simple') {
+          viewMode.value = 'professional';
+          currentPage.value = 'professional';
+          // 初始化专业仪表盘
+          setTimeout(() => {
+            initProfessionalDashboard();
+          }, 100);
+        } else {
+          viewMode.value = 'simple';
+          currentPage.value = 'home';
+        }
+      };
+
+      const initProfessionalDashboard = () => {
+        // 初始化 GPS 滤波器
+        if (!CurrentSession.gpsFilter) {
+          CurrentSession.gpsFilter = new GpsInertialFilter();
+        }
+        
+        // 初始化 Canvas 图表
+        const longCanvas = document.querySelector('canvas[ref="longChart"]');
+        const latCanvas = document.querySelector('canvas[ref="latChart"]');
+        if (longCanvas || latCanvas) {
+          ProfessionalDashboard.init(longCanvas, latCanvas);
+        }
+      };
+
       const calibrateSensors = () => {
         if (SensorService.calibrate) {
           SensorService.calibrate();
@@ -221,6 +261,38 @@ function initVueApp() {
         alert(`历史记录详情\n\n日期：${formatDate(record.date)}\n时长：${formatDuration(record.duration)}\n最大 G 值：${record.maxG.toFixed(2)}\n平均 G 值：${record.avgG.toFixed(2)}\n模拟器：${getSimulatorName(record.simulator)}\n事件数：${record.events}\n平稳得分：${record.smoothScore.toFixed(0)}`);
       };
 
+      const formatEventType = (type) => {
+        const typeMap = {
+          'hardAcceleration': '急加速',
+          'hardBraking': '急减速',
+          'hardTurn': '急转向',
+          'bump': '颠簸',
+          'collision': '碰撞'
+        };
+        return typeMap[type] || type;
+      };
+
+      const formatTimeAgo = (timestamp) => {
+        const now = Date.now();
+        const diff = now - timestamp;
+        const seconds = Math.floor(diff / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+
+        if (hours > 0) return `${hours}小时前`;
+        if (minutes > 0) return `${minutes}分钟前`;
+        return '刚刚';
+      };
+
+      const formatTime = (seconds) => {
+        return ProfessionalDashboard.formatTime(seconds);
+      };
+
+      // 计算属性 - 最近事件（只显示最近 10 条）
+      const recentEvents = computed(() => {
+        return events.value.slice(-10).reverse();
+      });
+
       // 生命周期
       onMounted(() => {
         // 初始化 Three.js
@@ -246,6 +318,7 @@ function initVueApp() {
         selectedSimulator,
         qualitySetting,
         sensitivity,
+        viewMode,
         sensorData,
         gForce,
         spillPercentage,
@@ -255,6 +328,13 @@ function initVueApp() {
         changelog,
         simulators,
         qualityLevels,
+        accBallX,
+        accBallY,
+        duration,
+        distance,
+        speed,
+        hasGPS,
+        recentEvents,
         toggleDrawer,
         toggleSidePanel,
         toggleFullscreen,
@@ -263,12 +343,16 @@ function initVueApp() {
         stopSimulation,
         changeSimulator,
         changeQuality,
+        switchViewMode,
         calibrateSensors,
         formatDate,
         formatDuration,
         getSimulatorName,
         renderChangelog,
-        viewHistoryDetail
+        viewHistoryDetail,
+        formatEventType,
+        formatTimeAgo,
+        formatTime
       };
     }
   });
@@ -322,10 +406,33 @@ function handleSensorData(data) {
   // 更新 Three.js 液体效果
   ThreeEngine.updateLiquid(SensorData.lateralAccel, SensorData.longitudinalAccel);
 
+  // 更新专业仪表盘
+  if (AppState.viewMode === 'professional') {
+    updateProfessionalDashboard(data);
+  }
+
   // 更新 UI（如果 Vue 已初始化）
-  if (app) {
+  if (app && app._instance) {
     app._instance.data.gForce.value = CalculatedData.gForce;
     app._instance.data.spillPercentage.value = CalculatedData.spillPercentage;
+    app._instance.data.accBallX.value = ProfessionalDashboard.accBallX;
+    app._instance.data.accBallY.value = ProfessionalDashboard.accBallY;
+    app._instance.data.duration.value = ProfessionalDashboard.duration;
+    app._instance.data.distance.value = ProfessionalDashboard.distance;
+  }
+}
+
+/**
+ * 更新专业仪表盘
+ */
+function updateProfessionalDashboard(sensorData) {
+  // 更新仪表盘数据
+  ProfessionalDashboard.update(sensorData, CurrentSession.lastGpsPosition);
+  
+  // 更新 UI 状态
+  if (app && app._instance) {
+    app._instance.data.duration.value = ProfessionalDashboard.duration;
+    app._instance.data.distance.value = ProfessionalDashboard.distance;
   }
 }
 
