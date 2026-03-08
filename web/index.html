@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport"
     content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>可乐模拟器 - 二次元版</title>
+  <title>掉了没有啊 - 二次元版</title>
   <style>
     [v-cloak] {
       display: none !important;
@@ -24,21 +24,18 @@
       --anime-text-dim: rgba(255, 255, 255, 0.7);
     }
 
-    /* 玻璃拟态设计 */
+    /* 扁平化设计 */
     .glass {
-      background: rgba(26, 26, 46, 0.7);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
+      background: var(--anime-dark);
       border: 1px solid rgba(255, 255, 255, 0.1);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     }
 
-    /* 渐变背景 */
+    /* 扁平化背景 */
     body {
       margin: 0;
       padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: linear-gradient(135deg, var(--anime-darker) 0%, var(--anime-dark) 50%, var(--anime-gray) 100%);
+      background: var(--anime-darker);
       color: var(--anime-text);
       overflow: hidden;
       height: 100vh;
@@ -67,10 +64,7 @@
     .header h1 {
       font-size: 20px;
       margin: 0;
-      background: linear-gradient(90deg, var(--anime-pink), var(--anime-purple), var(--anime-cyan));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      color: var(--anime-pink);
     }
 
     /* 主内容区域 */
@@ -121,60 +115,50 @@
     .data-value {
       font-size: 24px;
       font-weight: bold;
-      background: linear-gradient(90deg, var(--anime-pink), var(--anime-cyan));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      color: var(--anime-pink);
     }
 
-    /* 按钮样式 - 像素动物主题 */
+    /* 按钮样式 - 纯像素风格 */
     .btn {
-      padding: 12px 24px;
-      border: none;
-      border-radius: 8px;
-      background: linear-gradient(135deg, var(--anime-pink), var(--anime-purple));
+      padding: 10px 18px;
+      border: 2px solid transparent;
+      background: transparent;
       color: white;
-      font-size: 14px;
-      font-weight: bold;
+      font-size: 13px;
       cursor: pointer;
-      transition: all 0.3s ease;
+      transition: all 0.2s ease;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      box-shadow: 0 4px 16px rgba(255, 107, 157, 0.3);
       position: relative;
-      overflow: hidden;
+      image-rendering: pixelated;
     }
 
-    .btn::before {
+    .btn::after {
       content: '';
       position: absolute;
       top: 0;
-      left: -100%;
-      width: 100%;
-      height: 100%;
-      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-      transition: left 0.5s ease;
-    }
-
-    .btn:hover::before {
-      left: 100%;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      pointer-events: none;
     }
 
     .btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 24px rgba(255, 107, 157, 0.5);
+      border-color: rgba(255, 107, 157, 0.8);
+      transform: scale(1.05);
     }
 
     .btn:active {
-      transform: translateY(0);
+      transform: scale(0.95);
     }
 
     .btn:disabled {
-      opacity: 0.5;
+      opacity: 0.4;
       cursor: not-allowed;
-      transform: none;
+      border-color: rgba(255, 255, 255, 0.1);
     }
 
     /* 菜单按钮 */
@@ -196,7 +180,6 @@
       right: 0;
       bottom: 0;
       background: rgba(0, 0, 0, 0.5);
-      backdrop-filter: blur(4px);
       z-index: 999;
       opacity: 0;
       pointer-events: none;
@@ -332,10 +315,7 @@
     .page-header h2 {
       font-size: 24px;
       margin: 0;
-      background: linear-gradient(90deg, var(--anime-pink), var(--anime-purple));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      color: var(--anime-pink);
     }
 
     /* 历史记录列表 */
@@ -407,7 +387,7 @@
       padding: 8px 16px;
       border: none;
       border-radius: 6px;
-      background: linear-gradient(135deg, #ff4444, #ff6b6b);
+      background: #ff4444;
       color: white;
       font-size: 12px;
       cursor: pointer;
@@ -416,7 +396,7 @@
 
     .btn-danger:hover {
       transform: translateY(-2px);
-      box-shadow: 0 4px 16px rgba(255, 68, 68, 0.4);
+      background: #ff6b6b;
     }
 
     .empty-state {
@@ -522,9 +502,8 @@
     }
 
     .option-btn.active {
-      background: linear-gradient(135deg, var(--anime-pink), var(--anime-purple));
+      background: var(--anime-pink);
       border-color: transparent;
-      box-shadow: 0 4px 16px rgba(255, 107, 157, 0.4);
     }
 
     /* 范围滑块 */
@@ -580,23 +559,20 @@
     }
 
     .range-slider::-webkit-slider-thumb {
-      -webkit-appearance: none;
       width: 20px;
       height: 20px;
       border-radius: 50%;
-      background: linear-gradient(135deg, var(--anime-pink), var(--anime-purple));
+      background: var(--anime-pink);
       cursor: pointer;
-      box-shadow: 0 2px 8px rgba(255, 107, 157, 0.4);
     }
 
     .range-slider::-moz-range-thumb {
       width: 20px;
       height: 20px;
       border-radius: 50%;
-      background: linear-gradient(135deg, var(--anime-pink), var(--anime-purple));
+      background: var(--anime-pink);
       cursor: pointer;
       border: none;
-      box-shadow: 0 2px 8px rgba(255, 107, 157, 0.4);
     }
 
     .range-labels {
@@ -616,10 +592,7 @@
     .about-content h3 {
       font-size: 24px;
       margin-bottom: 16px;
-      background: linear-gradient(90deg, var(--anime-pink), var(--anime-purple), var(--anime-cyan));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      color: var(--anime-pink);
     }
 
     .about-content p {
@@ -740,7 +713,6 @@
       top: 50%;
       left: 50%;
       transition: transform 0.1s;
-      box-shadow: 0 0 10px rgba(25, 118, 210, 0.5);
     }
 
     /* 图表 */
@@ -902,7 +874,7 @@
   <meta name="mobile-web-app-status-bar-style" content="#0f0f1a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="#0f0f1a">
-  <meta name="apple-mobile-web-app-title" content="可乐模拟器">
+  <meta name="apple-mobile-web-app-title" content="掉了没有啊">
   <link rel="apple-touch-icon" href="icons/Icon-192.png?v=3">
 
   <!-- Three.js -->
@@ -930,6 +902,7 @@
   <script src="js/map_module.js?v=5"></script>
   <script src="js/pixel_animal_theme.js?v=5"></script>
   <script src="js/pixel_animal_buttons.js?v=5"></script>
+  <script src="js/city_background.js?v=5"></script>
   <script src="js/app.js?v=5"></script>
 </head>
 
@@ -937,7 +910,7 @@
   <div id="app" v-cloak>
     <!-- 顶部导航栏 -->
     <div class="header glass">
-      <h1>🥤 可乐模拟器</h1>
+      <h1>🥤 掉了没有啊</h1>
       <button class="menu-btn" @click="toggleDrawer">☰</button>
     </div>
 
@@ -1075,7 +1048,7 @@
           <h2>ℹ️ 关于</h2>
         </div>
         <div class="about-content">
-          <h3>可乐模拟器</h3>
+          <h3>掉了没有啊</h3>
           <p>版本：v2.0.0</p>
           <p>基于浏览器传感器 API 的液体模拟应用</p>
           <p>由 CanguroMIO 呈现</p>

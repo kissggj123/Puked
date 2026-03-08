@@ -240,6 +240,19 @@ function initVueApp() {
         if (longCanvas || latCanvas) {
           ProfessionalDashboard.init(longCanvas, latCanvas);
         }
+        
+        // 初始化地图（确保容器可见）
+        if (window.MapModule) {
+          setTimeout(() => {
+            const mapContainer = document.getElementById('map');
+            if (mapContainer) {
+              mapContainer.style.display = 'block';
+              mapContainer.style.width = '100%';
+              mapContainer.style.height = '100%';
+              MapModule.init('map');
+            }
+          }, 200);
+        }
       };
 
       const calibrateSensors = () => {
@@ -343,6 +356,11 @@ function initVueApp() {
         // 等待 DOM 渲染
         await new Promise(resolve => setTimeout(resolve, 100));
         
+        // 初始化城市背景
+        if (window.CityBackground) {
+          CityBackground.init('three-container');
+        }
+        
         // 初始化 Three.js
         const container = document.getElementById('three-container');
         if (container && window.ThreeEngine) {
@@ -350,12 +368,17 @@ function initVueApp() {
           ThreeEngine.startAnimation();
         }
         
-        // 初始化地图（在专业仪表盘页面）
-        if (window.MapModule) {
-          // 延迟初始化确保容器可见
-          setTimeout(() => {
-            MapModule.init('map');
-          }, 500);
+        // 自动检测并请求传感器权限
+        if (window.SensorPermissionManager) {
+          await SensorPermissionManager.checkPermissionStatus();
+          updatePermissionStatus();
+          
+          // 如果需要权限，显示请求对话框
+          if (SensorPermissionManager.motionPermission === 'prompt') {
+            setTimeout(() => {
+              SensorPermissionManager.showPermissionDialog();
+            }, 500);
+          }
         }
         
         // 应用像素动物按钮图标
@@ -365,9 +388,6 @@ function initVueApp() {
         
         // 初始化 IndexedDB
         Storage.initDB();
-        
-        // 更新权限状态
-        updatePermissionStatus();
         
         // 加载历史记录
         loadHistoryFromUI();
