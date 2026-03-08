@@ -146,32 +146,50 @@ const ThreeEngine = {
   createContainer() {
     if (this.containerMesh) {
       this.cupGroup.remove(this.containerMesh);
+      if (this.containerMesh.geometry) this.containerMesh.geometry.dispose();
+      if (this.containerMesh.material) this.containerMesh.material.dispose();
     }
 
     if (this.currentContainer === 'bowl') {
-      // 碗模型
-      const bowlGeometry = new THREE.SphereGeometry(1.5, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+      // 碗模型（更精细）
+      const bowlGeometry = new THREE.SphereGeometry(1.5, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2);
       const bowlMaterial = new THREE.MeshPhongMaterial({
         color: 0x1976D2,
         transparent: true,
-        opacity: 0.6,
+        opacity: 0.5,
         side: THREE.DoubleSide,
-        depthWrite: false
+        depthWrite: false,
+        shininess: 100,
+        specular: 0x444444
       });
       this.containerMesh = new THREE.Mesh(bowlGeometry, bowlMaterial);
       this.containerMesh.position.y = -0.5;
       this.containerMesh.scale.y = 0.6;
     } else {
-      // 杯子模型（默认）
-      const cupGeometry = new THREE.CylinderGeometry(1.2, 1, 3, 32, 1, true);
+      // 杯子模型（默认，更精细）
+      const cupGeometry = new THREE.CylinderGeometry(1.2, 1, 3, 64, 4, true);
       const cupMaterial = new THREE.MeshPhongMaterial({
         color: 0x1976D2,
         transparent: true,
-        opacity: 0.6,
+        opacity: 0.5,
         side: THREE.DoubleSide,
-        depthWrite: false
+        depthWrite: false,
+        shininess: 100,
+        specular: 0x444444
       });
       this.containerMesh = new THREE.Mesh(cupGeometry, cupMaterial);
+      
+      // 添加杯口边缘
+      const rimGeometry = new THREE.TorusGeometry(1.2, 0.08, 16, 64);
+      const rimMaterial = new THREE.MeshPhongMaterial({
+        color: 0x1976D2,
+        shininess: 100
+      });
+      const rim = new THREE.Mesh(rimGeometry, rimMaterial);
+      rim.rotation.x = Math.PI / 2;
+      rim.position.y = 0;
+      this.cupGroup.add(rim);
+      this.rimMesh = rim;
     }
 
     this.containerMesh.castShadow = this.quality === 'high';
@@ -185,6 +203,8 @@ const ThreeEngine = {
   createLiquid() {
     if (this.liquid) {
       this.cupGroup.remove(this.liquid);
+      if (this.liquid.geometry) this.liquid.geometry.dispose();
+      if (this.liquid.material) this.liquid.material.dispose();
     }
 
     const props = this.liquidProperties[this.currentLiquidType];
@@ -192,18 +212,19 @@ const ThreeEngine = {
     // 根据容器调整液体形状
     let liquidGeometry;
     if (this.currentContainer === 'bowl') {
-      // 碗中的液体（半球形）
-      liquidGeometry = new THREE.SphereGeometry(1.3, 32, 16, 0, Math.PI * 2, 0, Math.PI / 3);
+      // 碗中的液体（半球形，更精细）
+      liquidGeometry = new THREE.SphereGeometry(1.3, 64, 32, 0, Math.PI * 2, 0, Math.PI / 3);
     } else {
-      // 杯中的液体（圆柱形）
-      liquidGeometry = new THREE.CylinderGeometry(1.1, 0.9, 2.5, 32);
+      // 杯中的液体（圆柱形，更精细）
+      liquidGeometry = new THREE.CylinderGeometry(1.1, 0.9, 2.5, 64);
     }
     
     const liquidMaterial = new THREE.MeshPhongMaterial({
       color: props.color,
       transparent: true,
-      opacity: 0.9,
-      shininess: 100
+      opacity: 0.95,
+      shininess: 150,
+      specular: 0x222222
     });
 
     this.liquid = new THREE.Mesh(liquidGeometry, liquidMaterial);
@@ -405,20 +426,37 @@ const ThreeEngine = {
       return;
     }
 
+    console.log('[ThreeEngine] 切换液体:', type);
     this.currentLiquidType = type;
     const props = this.liquidProperties[type];
     
     // 根据液体类型切换容器
     const newContainer = props.container || 'cup';
     if (newContainer !== this.currentContainer) {
+      console.log('[ThreeEngine] 切换容器:', this.currentContainer, '->', newContainer);
       this.currentContainer = newContainer;
+      
+      // 完全重建场景
+      this.cupGroup.clear();
       this.createContainer();
+      this.createLiquid();
+      
+      // 如果有撒出粒子，也重建
+      if (this.spillParticles.length > 0) {
+        this.spillParticles.forEach(p => {
+          if (p.mesh && p.mesh.parent) {
+            p.mesh.parent.remove(p.mesh);
+          }
+        });
+        this.spillParticles = [];
+        this.createSpillParticles();
+      }
+    } else {
+      // 只更新液体
+      this.createLiquid();
     }
     
-    // 重新创建液体
-    this.createLiquid();
-    
-    console.log('[ThreeEngine] 液体类型更新为:', type, '容器:', this.currentContainer);
+    console.log('[ThreeEngine] 液体类型更新完成:', type, '容器:', this.currentContainer);
   },
 
   /**

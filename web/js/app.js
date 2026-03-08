@@ -358,6 +358,11 @@ function initVueApp() {
           }, 500);
         }
         
+        // 应用像素动物按钮图标
+        if (window.PixelAnimalButtons) {
+          PixelAnimalButtons.applyToButtons();
+        }
+        
         // 初始化 IndexedDB
         Storage.initDB();
         
