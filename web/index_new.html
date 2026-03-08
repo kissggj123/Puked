@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>可乐模拟器 - 二次元版</title>
+    <style>
+        [v-cloak] {
+            display: none !important;
+        }
+
+        /* 二次元配色系统 */
+        :root {
+            --anime-pink: #ff6b9d;
+            --anime-purple: #c77dff;
+            --anime-cyan: #00f0ff;
+            --anime-blue: #1976D2;
+            --anime-dark: #1a1a2e;
+            --anime-darker: #0f0f1a;
+            --anime-gray: #2d2d44;
+            --anime-text: #ffffff;
+            --anime-text-dim: rgba(255, 255, 255, 0.7);
+        }
+
+        /* 玻璃拟态设计 */
+        .glass {
+            background: rgba(26, 26, 46, 0.7);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        /* 渐变背景 */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, var(--anime-darker) 0%, var(--anime-dark) 50%, var(--anime-gray) 100%);
+            color: var(--anime-text);
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        /* 全屏样式 */
+        :fullscreen {
+            background: var(--anime-darker);
+        }
+
+        #app {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 顶部导航栏 */
+        .header {
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .header h1 {
+            font-size: 20px;
+            margin: 0;
+            background: linear-gradient(90deg, var(--anime-pink), var(--anime-purple), var(--anime-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* 主内容区域 */
+        .main-content {
+            flex: 1;
+            display: flex;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* 3D 容器 */
+        #three-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #three-container canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* 侧边栏数据面板 */
+        .side-panel {
+            width: 300px;
+            padding: 20px;
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            overflow-y: auto;
+        }
+
+        /* 数据卡片 */
+        .data-card {
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .data-card h3 {
+            font-size: 14px;
+            margin: 0 0 8px;
+            color: var(--anime-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .data-value {
+            font-size: 24px;
+            font-weight: bold;
+            background: linear-gradient(90deg, var(--anime-pink), var(--anime-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* 按钮样式 */
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            background: linear-gradient(135deg, var(--anime-pink), var(--anime-purple));
+            color: white;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 16px rgba(255, 107, 157, 0.3);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(255, 107, 157, 0.5);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        /* 菜单按钮 */
+        .menu-btn {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            color: var(--anime-text);
+            font-size: 20px;
+        }
+
+        /* 侧边抽屉菜单 */
+        .drawer-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            z-index: 999;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .drawer-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .drawer {
+            position: fixed;
+            top: 0;
+            right: -320px;
+            width: 320px;
+            height: 100vh;
+            background: var(--anime-dark);
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 1000;
+            transition: right 0.3s ease;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow-y: auto;
+        }
+
+        .drawer.active {
+            right: 0;
+        }
+
+        .drawer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .drawer-header h2 {
+            font-size: 18px;
+            margin: 0;
+            color: var(--anime-text);
+        }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: var(--anime-text);
+            font-size: 24px;
+            cursor: pointer;
+            padding: 4px;
+        }
+
+        .drawer-menu {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .drawer-menu li {
+            margin-bottom: 12px;
+        }
+
+        .drawer-menu a {
+            display: block;
+            padding: 12px 16px;
+            border-radius: 8px;
+            color: var(--anime-text);
+            text-decoration: none;
+            transition: all 0.3s ease;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .drawer-menu a:hover {
+            background: rgba(255, 107, 157, 0.2);
+            transform: translateX(-4px);
+        }
+
+        /* 底部控制栏 */
+        .controls {
+            padding: 16px 20px;
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* 隐藏元素 */
+        .hidden {
+            display: none !important;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .side-panel {
+                position: absolute;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                width: 100%;
+                background: var(--anime-dark);
+                transform: translateX(100%);
+                transition: transform 0.3s ease;
+            }
+
+            .side-panel.show {
+                transform: translateX(0);
+            }
+        }
+    </style>
+
+    <!-- Favicon -->
+    <link rel="icon" href="favicon.png?v=3" type="image/png">
+    <link rel="icon" type="image/png" sizes="16x16" href="icons/Icon-192.png?v=3">
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/Icon-192.png?v=3">
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/Icon-192.png?v=3">
+    <link rel="shortcut icon" href="favicon.png?v=3" type="image/png">
+
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json?v=6">
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-status-bar-style" content="#0f0f1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="#0f0f1a">
+    <meta name="apple-mobile-web-app-title" content="可乐模拟器">
+    <link rel="apple-touch-icon" href="icons/Icon-192.png?v=3">
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- Vue.js -->
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.2.47/dist/vue.global.prod.min.js"></script>
+
+    <!-- 高德地图 -->
+    <script src="https://webapi.amap.com/maps?v=2.0&key=557fdddec8b3e1073dabefe50c620bfd"></script>
+</head>
+
+<body>
+    <div id="app" v-cloak>
+        <!-- 顶部导航栏 -->
+        <div class="header glass">
+            <h1>🥤 可乐模拟器</h1>
+            <button class="menu-btn" @click="toggleDrawer">☰</button>
+        </div>
+
+        <!-- 主内容区域 -->
+        <div class="main-content">
+            <!-- 3D 容器 -->
+            <div id="three-container"></div>
+
+            <!-- 侧边数据面板 -->
+            <div class="side-panel glass" :class="{ show: showSidePanel }">
+                <div class="data-card glass">
+                    <h3>横向加速度</h3>
+                    <div class="data-value">{{ lateralAccel.toFixed(2) }} m/s²</div>
+                </div>
+
+                <div class="data-card glass">
+                    <h3>纵向加速度</h3>
+                    <div class="data-value">{{ longitudinalAccel.toFixed(2) }} m/s²</div>
+                </div>
+
+                <div class="data-card glass">
+                    <h3>垂直加速度</h3>
+                    <div class="data-value">{{ verticalAccel.toFixed(2) }} m/s²</div>
+                </div>
+
+                <div class="data-card glass">
+                    <h3>G 值</h3>
+                    <div class="data-value">{{ gForce.toFixed(3) }} G</div>
+                </div>
+
+                <div class="data-card glass">
+                    <h3>撒出百分比</h3>
+                    <div class="data-value" :style="{ color: spillPercentage > 0.5 ? '#ff4444' : 'inherit' }">
+                        {{ (spillPercentage * 100).toFixed(1) }}%
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部控制栏 -->
+        <div class="controls glass">
+            <button class="btn" @click="startSimulation">▶ 开始模拟</button>
+            <button class="btn" @click="stopSimulation" :disabled="!isRunning">⏹ 停止</button>
+            <button class="btn" @click="toggleFullscreen">⛶ 全屏</button>
+            <button class="btn" @click="toggleSidePanel">📊 数据</button>
+        </div>
+
+        <!-- 侧边抽屉菜单 -->
+        <div class="drawer-overlay" :class="{ active: drawerOpen }" @click="toggleDrawer"></div>
+        <div class="drawer glass" :class="{ active: drawerOpen }">
+            <div class="drawer-header">
+                <h2>菜单</h2>
+                <button class="close-btn" @click="toggleDrawer">×</button>
+            </div>
+            <ul class="drawer-menu">
+                <li><a href="#" @click.prevent="showPage('home')">🏠 首页</a></li>
+                <li><a href="#" @click.prevent="showPage('history')">📜 历史记录</a></li>
+                <li><a href="#" @click.prevent="showPage('changelog')">📝 更新日志</a></li>
+                <li><a href="#" @click.prevent="showPage('settings')">⚙️ 设置</a></li>
+                <li><a href="#" @click.prevent="showPage('about')">ℹ️ 关于</a></li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+
+        createApp({
+            setup() {
+                // 状态变量
+                const isRunning = ref(false);
+                const drawerOpen = ref(false);
+                const showSidePanel = ref(false);
+                const currentPage = ref('home');
+
+                // 传感器数据
+                const lateralAccel = ref(0);
+                const longitudinalAccel = ref(0);
+                const verticalAccel = ref(0);
+                const gForce = ref(0);
+                const spillPercentage = ref(0);
+
+                // Three.js 变量
+                let scene, camera, renderer, cup, liquid;
+                let animationId;
+
+                // 方法
+                const toggleDrawer = () => {
+                    drawerOpen.value = !drawerOpen.value;
+                };
+
+                const toggleSidePanel = () => {
+                    showSidePanel.value = !showSidePanel.value;
+                };
+
+                const toggleFullscreen = async () => {
+                    if (!document.fullscreenElement) {
+                        try {
+                            await document.documentElement.requestFullscreen();
+                        } catch (e) {
+                            console.error('Fullscreen error:', e);
+                        }
+                    } else {
+                        await document.exitFullscreen();
+                    }
+                };
+
+                const showPage = (page) => {
+                    currentPage.value = page;
+                    drawerOpen.value = false;
+                    // TODO: 实现页面切换逻辑
+                };
+
+                const startSimulation = () => {
+                    isRunning.value = true;
+                    initSensors();
+                    animate();
+                };
+
+                const stopSimulation = () => {
+                    isRunning.value = false;
+                    cancelAnimationFrame(animationId);
+                };
+
+                // 初始化 Three.js 场景
+                const initThreeJS = () => {
+                    const container = document.getElementById('three-container');
+
+                    // 场景
+                    scene = new THREE.Scene();
+                    scene.background = new THREE.Color(0x1a1a2e);
+
+                    // 相机
+                    camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+                    camera.position.z = 5;
+
+                    // 渲染器
+                    renderer = new THREE.WebGLRenderer({ antialias: true });
+                    renderer.setSize(container.clientWidth, container.clientHeight);
+                    renderer.setPixelRatio(window.devicePixelRatio);
+                    container.appendChild(renderer.domElement);
+
+                    // 创建可乐杯
+                    createCup();
+
+                    // 灯光
+                    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                    scene.add(ambientLight);
+
+                    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                    directionalLight.position.set(5, 5, 5);
+                    scene.add(directionalLight);
+
+                    // 窗口大小调整
+                    window.addEventListener('resize', onWindowResize);
+                };
+
+                const createCup = () => {
+                    // 杯子主体
+                    const cupGeometry = new THREE.CylinderGeometry(1, 1, 3, 32);
+                    const cupMaterial = new THREE.MeshPhongMaterial({
+                        color: 0x1976D2,
+                        transparent: true,
+                        opacity: 0.7,
+                        side: THREE.DoubleSide
+                    });
+                    cup = new THREE.Mesh(cupGeometry, cupMaterial);
+                    scene.add(cup);
+
+                    // 液体
+                    const liquidGeometry = new THREE.CylinderGeometry(0.9, 0.9, 2, 32);
+                    const liquidMaterial = new THREE.MeshPhongMaterial({
+                        color: 0x8B4513,
+                        transparent: true,
+                        opacity: 0.9
+                    });
+                    liquid = new THREE.Mesh(liquidGeometry, liquidMaterial);
+                    liquid.position.y = -0.5;
+                    scene.add(liquid);
+                };
+
+                const onWindowResize = () => {
+                    const container = document.getElementById('three-container');
+                    camera.aspect = container.clientWidth / container.clientHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(container.clientWidth, container.clientHeight);
+                };
+
+                const animate = () => {
+                    animationId = requestAnimationFrame(animate);
+
+                    // 根据传感器数据旋转液体
+                    if (isRunning.value) {
+                        liquid.rotation.z = lateralAccel.value * 0.1;
+                        liquid.rotation.x = longitudinalAccel.value * 0.1;
+                    }
+
+                    renderer.render(scene, camera);
+                };
+
+                // 初始化传感器
+                const initSensors = () => {
+                    if (typeof DeviceMotionEvent !== 'undefined') {
+                        window.addEventListener('devicemotion', handleMotion);
+                    } else {
+                        // 模拟数据用于测试
+                        simulateSensors();
+                    }
+                };
+
+                const handleMotion = (event) => {
+                    const accel = event.accelerationIncludingGravity;
+                    if (accel) {
+                        lateralAccel.value = accel.x || 0;
+                        longitudinalAccel.value = accel.y || 0;
+                        verticalAccel.value = accel.z || 0;
+
+                        // 计算 G 值
+                        const totalAccel = Math.sqrt(
+                            lateralAccel.value ** 2 +
+                            longitudinalAccel.value ** 2 +
+                            verticalAccel.value ** 2
+                        );
+                        gForce.value = totalAccel / 9.80665;
+
+                        // 计算撒出百分比（简化版）
+                        const threshold = 5;
+                        if (totalAccel > threshold) {
+                            spillPercentage.value = Math.min((totalAccel - threshold) / 10, 1);
+                        } else {
+                            spillPercentage.value = 0;
+                        }
+                    }
+                };
+
+                const simulateSensors = () => {
+                    // 模拟传感器数据用于测试
+                    setInterval(() => {
+                        if (isRunning.value) {
+                            lateralAccel.value = (Math.random() - 0.5) * 4;
+                            longitudinalAccel.value = (Math.random() - 0.5) * 4;
+                            verticalAccel.value = (Math.random() - 0.5) * 2;
+
+                            const totalAccel = Math.sqrt(
+                                lateralAccel.value ** 2 +
+                                longitudinalAccel.value ** 2 +
+                                verticalAccel.value ** 2
+                            );
+                            gForce.value = totalAccel / 9.80665;
+
+                            const threshold = 5;
+                            if (totalAccel > threshold) {
+                                spillPercentage.value = Math.min((totalAccel - threshold) / 10, 1);
+                            } else {
+                                spillPercentage.value = 0;
+                            }
+                        }
+                    }, 100);
+                };
+
+                // 生命周期
+                onMounted(() => {
+                    initThreeJS();
+                });
+
+                onUnmounted(() => {
+                    stopSimulation();
+                    window.removeEventListener('resize', onWindowResize);
+                });
+
+                return {
+                    isRunning,
+                    drawerOpen,
+                    showSidePanel,
+                    currentPage,
+                    lateralAccel,
+                    longitudinalAccel,
+                    verticalAccel,
+                    gForce,
+                    spillPercentage,
+                    toggleDrawer,
+                    toggleSidePanel,
+                    toggleFullscreen,
+                    showPage,
+                    startSimulation,
+                    stopSimulation
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+
+</html>
