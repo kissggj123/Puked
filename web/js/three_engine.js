@@ -109,6 +109,9 @@ const ThreeEngine = {
    * 创建场景物体
    */
   createSceneObjects() {
+    // 创建杯子组
+    this.cupGroup = new THREE.Group();
+    
     // 创建容器
     this.createContainer();
 
