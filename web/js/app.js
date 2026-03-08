@@ -90,8 +90,12 @@ function initVueApp() {
         { value: 'cola', label: '🥤 可乐' },
         { value: 'water', label: '💧 水' },
         { value: 'coffee', label: '☕ 咖啡' },
+        { value: 'milk', label: '🥛 牛奶' },
+        { value: 'juice', label: '🧃 果汁' },
         { value: 'rice', label: '🍚 米饭' },
-        { value: 'soup', label: '🍲 汤' }
+        { value: 'noodles', label: '🍜 面条' },
+        { value: 'soup', label: '🍲 汤' },
+        { value: 'porridge', label: '🥣 粥' }
       ];
 
       const qualityLevels = [
@@ -189,7 +193,11 @@ function initVueApp() {
       const changeSimulator = (type) => {
         AppState.selectedSimulator = type;
         selectedSimulator.value = type;
-        ThreeEngine.updateLiquidType(type);
+        
+        // 更新 Three.js 液体类型
+        if (ThreeEngine.updateLiquidType) {
+          ThreeEngine.updateLiquidType(type);
+        }
       };
 
       const changeQuality = (quality) => {
@@ -516,6 +524,11 @@ window.clearAllHistory = clearAllHistory;
  */
 function initApp() {
   console.log('[App] 初始化应用...');
+  
+  // 应用像素猫主题
+  if (window.PixelCatTheme) {
+    PixelCatTheme.applyToPage();
+  }
   
   // 创建 Vue 应用
   const vueApp = initVueApp();

@@ -19,12 +19,20 @@ const ThreeEngine = {
   
   // 液体属性
   liquidProperties: {
-    cola: { viscosity: 0.001, density: 1000, surfaceTension: 0.072, color: 0x8B4513 },
-    water: { viscosity: 0.001, density: 1000, surfaceTension: 0.072, color: 0x4FC3F7 },
-    coffee: { viscosity: 0.002, density: 1010, surfaceTension: 0.070, color: 0x6F4E37 },
-    rice: { viscosity: 0.1, density: 800, surfaceTension: 0, color: 0xFFFFFF, isParticle: true },
-    soup: { viscosity: 0.005, density: 1020, surfaceTension: 0.065, color: 0xFFD54F }
+    cola: { viscosity: 0.001, density: 1000, surfaceTension: 0.072, color: 0x8B4513, container: 'cup' },
+    water: { viscosity: 0.001, density: 1000, surfaceTension: 0.072, color: 0x4FC3F7, container: 'cup' },
+    coffee: { viscosity: 0.002, density: 1010, surfaceTension: 0.070, color: 0x6F4E37, container: 'cup' },
+    milk: { viscosity: 0.002, density: 1030, surfaceTension: 0.068, color: 0xFFFFE0, container: 'cup' },
+    juice: { viscosity: 0.001, density: 1050, surfaceTension: 0.070, color: 0xFFA500, container: 'cup' },
+    rice: { viscosity: 0.1, density: 800, surfaceTension: 0, color: 0xFFFFFF, isParticle: true, container: 'bowl' },
+    noodles: { viscosity: 0.05, density: 700, surfaceTension: 0, color: 0xFFF8DC, isParticle: true, container: 'bowl' },
+    soup: { viscosity: 0.005, density: 1020, surfaceTension: 0.065, color: 0xFFD54F, container: 'bowl' },
+    porridge: { viscosity: 0.08, density: 900, surfaceTension: 0.060, color: 0xF5DEB3, container: 'bowl' }
   },
+  
+  // 容器类型
+  currentContainer: 'cup',
+  containerMesh: null,
 
   /**
    * 初始化 Three.js 场景
@@ -101,36 +109,10 @@ const ThreeEngine = {
    * 创建场景物体
    */
   createSceneObjects() {
-    // 创建杯子组
-    this.cupGroup = new THREE.Group();
+    // 创建容器
+    this.createContainer();
 
-    // 杯子主体
-    const cupGeometry = new THREE.CylinderGeometry(1.2, 1, 3, 32, 1, true);
-    const cupMaterial = new THREE.MeshPhongMaterial({
-      color: 0x1976D2,
-      transparent: true,
-      opacity: 0.6,
-      side: THREE.DoubleSide,
-      depthWrite: false
-    });
-    const cup = new THREE.Mesh(cupGeometry, cupMaterial);
-    cup.castShadow = this.quality === 'high';
-    cup.receiveShadow = this.quality === 'high';
-    this.cupGroup.add(cup);
-
-    // 杯底
-    const bottomGeometry = new THREE.CylinderGeometry(1, 1, 0.2, 32);
-    const bottomMaterial = new THREE.MeshPhongMaterial({
-      color: 0x1976D2,
-      transparent: true,
-      opacity: 0.8
-    });
-    const bottom = new THREE.Mesh(bottomGeometry, bottomMaterial);
-    bottom.position.y = -1.4;
-    bottom.castShadow = this.quality === 'high';
-    this.cupGroup.add(bottom);
-
-    // 液体
+    // 创建液体
     this.createLiquid();
 
     // 添加杯组到场景
@@ -156,6 +138,45 @@ const ThreeEngine = {
   },
 
   /**
+   * 创建容器（杯子/碗）
+   */
+  createContainer() {
+    if (this.containerMesh) {
+      this.cupGroup.remove(this.containerMesh);
+    }
+
+    if (this.currentContainer === 'bowl') {
+      // 碗模型
+      const bowlGeometry = new THREE.SphereGeometry(1.5, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+      const bowlMaterial = new THREE.MeshPhongMaterial({
+        color: 0x1976D2,
+        transparent: true,
+        opacity: 0.6,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+      this.containerMesh = new THREE.Mesh(bowlGeometry, bowlMaterial);
+      this.containerMesh.position.y = -0.5;
+      this.containerMesh.scale.y = 0.6;
+    } else {
+      // 杯子模型（默认）
+      const cupGeometry = new THREE.CylinderGeometry(1.2, 1, 3, 32, 1, true);
+      const cupMaterial = new THREE.MeshPhongMaterial({
+        color: 0x1976D2,
+        transparent: true,
+        opacity: 0.6,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+      this.containerMesh = new THREE.Mesh(cupGeometry, cupMaterial);
+    }
+
+    this.containerMesh.castShadow = this.quality === 'high';
+    this.containerMesh.receiveShadow = this.quality === 'high';
+    this.cupGroup.add(this.containerMesh);
+  },
+
+  /**
    * 创建液体
    */
   createLiquid() {
@@ -164,7 +185,17 @@ const ThreeEngine = {
     }
 
     const props = this.liquidProperties[this.currentLiquidType];
-    const liquidGeometry = new THREE.CylinderGeometry(1.1, 0.9, 2.5, 32);
+    
+    // 根据容器调整液体形状
+    let liquidGeometry;
+    if (this.currentContainer === 'bowl') {
+      // 碗中的液体（半球形）
+      liquidGeometry = new THREE.SphereGeometry(1.3, 32, 16, 0, Math.PI * 2, 0, Math.PI / 3);
+    } else {
+      // 杯中的液体（圆柱形）
+      liquidGeometry = new THREE.CylinderGeometry(1.1, 0.9, 2.5, 32);
+    }
+    
     const liquidMaterial = new THREE.MeshPhongMaterial({
       color: props.color,
       transparent: true,
@@ -173,9 +204,53 @@ const ThreeEngine = {
     });
 
     this.liquid = new THREE.Mesh(liquidGeometry, liquidMaterial);
-    this.liquid.position.y = -0.3;
+    this.liquid.position.y = this.currentContainer === 'bowl' ? -0.3 : -0.3;
     this.liquid.castShadow = this.quality === 'high';
     this.cupGroup.add(this.liquid);
+    
+    // 如果是颗粒食物，创建粒子效果
+    if (props.isParticle) {
+      this.createParticleFood(props);
+    }
+  },
+
+  /**
+   * 创建颗粒食物（米饭/面条）
+   */
+  createParticleFood(props) {
+    const particleCount = this.quality === 'high' ? 500 : this.quality === 'medium' ? 200 : 100;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const sizes = [];
+
+    for (let i = 0; i < particleCount; i++) {
+      // 在碗中随机分布
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.random() * 1.2;
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      const y = -0.3 + Math.random() * 0.3;
+
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = z;
+      sizes.push(Math.random() * 0.05 + 0.03);
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    const material = new THREE.PointsMaterial({
+      color: props.color,
+      size: 0.05,
+      transparent: true,
+      opacity: 0.8
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    this.cupGroup.add(particles);
+    
+    // 保存粒子引用以便更新
+    this.particleFood = particles;
   },
 
   /**
@@ -322,8 +397,25 @@ const ThreeEngine = {
    * 更新液体类型
    */
   updateLiquidType(type) {
+    if (!this.liquidProperties[type]) {
+      console.error('[ThreeEngine] 未知的液体类型:', type);
+      return;
+    }
+
     this.currentLiquidType = type;
+    const props = this.liquidProperties[type];
+    
+    // 根据液体类型切换容器
+    const newContainer = props.container || 'cup';
+    if (newContainer !== this.currentContainer) {
+      this.currentContainer = newContainer;
+      this.createContainer();
+    }
+    
+    // 重新创建液体
     this.createLiquid();
+    
+    console.log('[ThreeEngine] 液体类型更新为:', type, '容器:', this.currentContainer);
   },
 
   /**
