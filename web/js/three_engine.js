@@ -10,9 +10,12 @@ const ThreeEngine = {
   cupGroup: null,
   liquid: null,
   particles: [],
+  spillParticles: [],
   animationId: null,
   currentLiquidType: 'cola',
   quality: 'high',
+  fps: 60,
+  lastFrameTime: 0,
   
   // 液体属性
   liquidProperties: {
@@ -176,6 +179,120 @@ const ThreeEngine = {
   },
 
   /**
+   * 创建撒出粒子
+   */
+  createSpillParticles() {
+    const particleCount = this.quality === 'high' ? 200 : this.quality === 'medium' ? 100 : 50;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = [];
+    const sizes = [];
+
+    for (let i = 0; i < particleCount; i++) {
+      positions[i * 3] = 0;
+      positions[i * 3 + 1] = 0;
+      positions[i * 3 + 2] = 0;
+      
+      velocities.push({
+        x: (Math.random() - 0.5) * 0.1,
+        y: Math.random() * 0.2,
+        z: (Math.random() - 0.5) * 0.1
+      });
+      
+      sizes.push(Math.random() * 0.1 + 0.05);
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    const props = this.liquidProperties[this.currentLiquidType];
+    const material = new THREE.PointsMaterial({
+      color: props.color,
+      size: 0.1,
+      transparent: true,
+      opacity: 0.6,
+      sizeAttenuation: true
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    particles.position.y = 0.5;
+    this.scene.add(particles);
+    
+    this.spillParticles.push({
+      mesh: particles,
+      velocities: velocities,
+      sizes: sizes,
+      active: false,
+      age: 0
+    });
+  },
+
+  /**
+   * 更新撒出粒子
+   */
+  updateSpillParticles(spillAmount) {
+    if (this.spillParticles.length === 0) {
+      this.createSpillParticles();
+    }
+
+    const particle = this.spillParticles[0];
+    const positions = particle.mesh.geometry.attributes.position.array;
+
+    // 激活粒子
+    if (spillAmount > 0.1 && !particle.active) {
+      particle.active = true;
+      particle.age = 0;
+    }
+
+    if (!particle.active) return;
+
+    const props = this.liquidProperties[this.currentLiquidType];
+    const gravity = 0.01;
+    const damping = 0.98;
+
+    for (let i = 0; i < particle.velocities.length; i++) {
+      const vx = particle.velocities[i].x;
+      const vy = particle.velocities[i].y;
+      const vz = particle.velocities[i].z;
+
+      // 更新位置
+      positions[i * 3] += vx;
+      positions[i * 3 + 1] += vy;
+      positions[i * 3 + 2] += vz;
+
+      // 应用重力
+      particle.velocities[i].y -= gravity;
+
+      // 应用阻尼
+      particle.velocities[i].x *= damping;
+      particle.velocities[i].y *= damping;
+      particle.velocities[i].z *= damping;
+
+      // 地面碰撞
+      if (positions[i * 3 + 1] < -2) {
+        positions[i * 3 + 1] = -2;
+        particle.velocities[i].y *= -0.5;
+      }
+    }
+
+    particle.mesh.geometry.attributes.position.needsUpdate = true;
+    particle.age++;
+
+    // 粒子消失
+    if (particle.age > 200) {
+      particle.active = false;
+      // 重置粒子位置
+      for (let i = 0; i < particle.velocities.length; i++) {
+        positions[i * 3] = 0;
+        positions[i * 3 + 1] = 0.5;
+        positions[i * 3 + 2] = 0;
+        particle.velocities[i].x = (Math.random() - 0.5) * 0.1;
+        particle.velocities[i].y = Math.random() * 0.2;
+        particle.velocities[i].z = (Math.random() - 0.5) * 0.1;
+      }
+    }
+  },
+
+  /**
    * 创建背景粒子
    */
   createBackgroundParticles() {
@@ -230,25 +347,67 @@ const ThreeEngine = {
     // 粘度影响晃动幅度
     const viscosityFactor = 1 / (1 + props.viscosity * 100);
     this.liquid.scale.y = 1 + Math.sin(Date.now() * 0.001) * 0.05 * viscosityFactor;
+
+    // 计算撒出量
+    const totalAccel = Math.sqrt(lateralAccel ** 2 + longitudinalAccel ** 2);
+    const spillThreshold = 5;
+    const spillAmount = totalAccel > spillThreshold ? Math.min((totalAccel - spillThreshold) / 10, 1) : 0;
+
+    // 更新撒出粒子
+    if (this.quality !== 'low') {
+      this.updateSpillParticles(spillAmount);
+    }
   },
 
   /**
    * 设置质量
    */
   setQuality(quality) {
+    const oldQuality = this.quality;
     this.quality = quality;
+    
+    // 如果质量没变，不重新初始化
+    if (oldQuality === quality) return;
+    
+    // 保存当前液体类型
+    const currentLiquid = this.currentLiquidType;
     
     // 重新初始化场景
     this.dispose();
     this.init();
+    
+    // 恢复液体类型
+    this.updateLiquidType(currentLiquid);
   },
 
   /**
    * 启动动画
    */
   startAnimation() {
+    let frameCount = 0;
+    let lastTime = performance.now();
+    
     const animate = () => {
       this.animationId = requestAnimationFrame(animate);
+      
+      // FPS 计算
+      frameCount++;
+      const currentTime = performance.now();
+      if (currentTime - lastTime >= 1000) {
+        this.fps = frameCount;
+        frameCount = 0;
+        lastTime = currentTime;
+        
+        // 自动降级
+        if (this.fps < 30 && this.quality === 'high') {
+          console.log('[ThreeEngine] FPS 过低，自动降级到中画质');
+          this.setQuality('medium');
+        } else if (this.fps < 20 && this.quality === 'medium') {
+          console.log('[ThreeEngine] FPS 过低，自动降级到低画质');
+          this.setQuality('low');
+        }
+      }
+      
       this.render();
     };
     animate();
@@ -295,6 +454,20 @@ const ThreeEngine = {
    */
   dispose() {
     this.stopAnimation();
+    
+    // 清理撒出粒子
+    this.spillParticles.forEach(p => {
+      if (p.mesh && p.mesh.parent) {
+        p.mesh.parent.remove(p.mesh);
+      }
+      if (p.mesh && p.mesh.geometry) {
+        p.mesh.geometry.dispose();
+      }
+      if (p.mesh && p.mesh.material) {
+        p.mesh.material.dispose();
+      }
+    });
+    this.spillParticles = [];
     
     if (this.renderer) {
       this.renderer.dispose();

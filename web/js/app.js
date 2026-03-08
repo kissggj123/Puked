@@ -73,6 +73,21 @@ function initVueApp() {
       const events = ref(CalculatedData.events);
       const historyRecords = ref(HistoryRecords);
 
+      // 配置选项
+      const simulators = [
+        { value: 'cola', label: '🥤 可乐' },
+        { value: 'water', label: '💧 水' },
+        { value: 'coffee', label: '☕ 咖啡' },
+        { value: 'rice', label: '🍚 米饭' },
+        { value: 'soup', label: '🍲 汤' }
+      ];
+
+      const qualityLevels = [
+        { value: 'low', label: '低' },
+        { value: 'medium', label: '中' },
+        { value: 'high', label: '高' }
+      ];
+
       // 更新日志内容
       const changelog = ref(`
 # 更新日志
@@ -171,6 +186,41 @@ function initVueApp() {
         ThreeEngine.setQuality(quality);
       };
 
+      const calibrateSensors = () => {
+        if (SensorService.calibrate) {
+          SensorService.calibrate();
+          alert('传感器校准完成！');
+        }
+      };
+
+      // 工具函数
+      const formatDate = (dateStr) => {
+        const date = new Date(dateStr);
+        return date.toLocaleString('zh-CN');
+      };
+
+      const formatDuration = (seconds) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}分${secs}秒`;
+      };
+
+      const getSimulatorName = (simulator) => {
+        const sim = simulators.find(s => s.value === simulator);
+        return sim ? sim.label : simulator;
+      };
+
+      const renderChangelog = () => {
+        if (typeof marked !== 'undefined') {
+          return marked.parse(changelog.value);
+        }
+        return changelog.value;
+      };
+
+      const viewHistoryDetail = (record) => {
+        alert(`历史记录详情\n\n日期：${formatDate(record.date)}\n时长：${formatDuration(record.duration)}\n最大 G 值：${record.maxG.toFixed(2)}\n平均 G 值：${record.avgG.toFixed(2)}\n模拟器：${getSimulatorName(record.simulator)}\n事件数：${record.events}\n平稳得分：${record.smoothScore.toFixed(0)}`);
+      };
+
       // 生命周期
       onMounted(() => {
         // 初始化 Three.js
@@ -203,6 +253,8 @@ function initVueApp() {
         events,
         historyRecords,
         changelog,
+        simulators,
+        qualityLevels,
         toggleDrawer,
         toggleSidePanel,
         toggleFullscreen,
@@ -210,7 +262,13 @@ function initVueApp() {
         startSimulation,
         stopSimulation,
         changeSimulator,
-        changeQuality
+        changeQuality,
+        calibrateSensors,
+        formatDate,
+        formatDuration,
+        getSimulatorName,
+        renderChangelog,
+        viewHistoryDetail
       };
     }
   });
