@@ -84,6 +84,14 @@ function initVueApp() {
       const distance = ref(0);
       const speed = ref(0);
       const hasGPS = ref(false);
+      
+      // 传感器权限状态
+      const algorithmVersion = ref('2.0.0');
+      const calibrationVersion = ref('adaptive-v3');
+      const deviceType = ref('检测中...');
+      const autoSensitivity = ref(1.0);
+      const permissionStatus = ref('unknown');
+      const permissionStatusText = ref('检测中...');
 
       // 配置选项
       const simulators = [
@@ -295,10 +303,39 @@ function initVueApp() {
       const formatTime = (seconds) => {
         return ProfessionalDashboard.formatTime(seconds);
       };
+      
+      const requestSensorPermission = async () => {
+        if (window.SensorPermissionManager) {
+          const granted = await SensorPermissionManager.requestPermission();
+          updatePermissionStatus();
+          if (granted) {
+            alert('传感器权限已授予！');
+          }
+        }
+      };
+      
+      const updatePermissionStatus = () => {
+        if (window.SensorPermissionManager) {
+          permissionStatus.value = SensorPermissionManager.motionPermission;
+          permissionStatusText.value = SensorPermissionManager.getStatusText();
+          
+          const config = SensorPermissionManager.getAutoSensitivity();
+          autoSensitivity.value = config.base;
+          deviceType.value = config.calibration;
+          algorithmVersion.value = config.version;
+        }
+      };
 
       // 计算属性 - 最近事件（只显示最近 10 条）
       const recentEvents = computed(() => {
         return events.value.slice(-10).reverse();
+      });
+      
+      // 计算属性 - 权限状态样式
+      const permissionStatusClass = computed(() => {
+        if (permissionStatus.value === 'granted') return 'success';
+        if (permissionStatus.value === 'denied') return 'error';
+        return 'warning';
       });
 
       // 生命周期
@@ -313,8 +350,19 @@ function initVueApp() {
           ThreeEngine.startAnimation();
         }
         
+        // 初始化地图（在专业仪表盘页面）
+        if (window.MapModule) {
+          // 延迟初始化确保容器可见
+          setTimeout(() => {
+            MapModule.init('map');
+          }, 500);
+        }
+        
         // 初始化 IndexedDB
         Storage.initDB();
+        
+        // 更新权限状态
+        updatePermissionStatus();
         
         // 加载历史记录
         loadHistoryFromUI();
@@ -350,6 +398,13 @@ function initVueApp() {
         speed,
         hasGPS,
         recentEvents,
+        algorithmVersion,
+        calibrationVersion,
+        deviceType,
+        autoSensitivity,
+        permissionStatus,
+        permissionStatusText,
+        permissionStatusClass,
         toggleDrawer,
         toggleSidePanel,
         toggleFullscreen,
@@ -367,7 +422,8 @@ function initVueApp() {
         viewHistoryDetail,
         formatEventType,
         formatTimeAgo,
-        formatTime
+        formatTime,
+        requestSensorPermission
       };
     }
   });
@@ -531,10 +587,19 @@ window.clearAllHistory = clearAllHistory;
  */
 function initApp() {
   console.log('[App] 初始化应用...');
+
+  // 应用像素动物主题
+  if (window.PixelAnimalTheme) {
+    PixelAnimalTheme.applyToPage();
+  }
   
-  // 应用像素猫主题
-  if (window.PixelCatTheme) {
-    PixelCatTheme.applyToPage();
+  // 检查传感器权限
+  if (window.SensorPermissionManager) {
+    SensorPermissionManager.checkPermissionStatus();
+    // 延迟弹出权限请求
+    setTimeout(() => {
+      SensorPermissionManager.showPermissionDialog();
+    }, 1000);
   }
   
   // 创建 Vue 应用
