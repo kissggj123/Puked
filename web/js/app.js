@@ -55,7 +55,7 @@ let app = null;
  * 初始化 Vue 应用
  */
 function initVueApp() {
-  const { createApp, ref, reactive, onMounted, onUnmounted } = Vue;
+  const { createApp, ref, reactive, computed, onMounted, onUnmounted } = Vue;
 
   app = createApp({
     setup() {

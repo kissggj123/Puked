@@ -876,17 +876,17 @@
       <div class="side-panel glass" :class="{ show: showSidePanel }">
         <div class="data-card glass">
           <h3>横向加速度</h3>
-          <div class="data-value">{{ sensorData.lateralAccel.toFixed(2) }} m/s²</div>
+          <div class="data-value">{{ (sensorData?.lateralAccel || 0).toFixed(2) }} m/s²</div>
         </div>
 
         <div class="data-card glass">
           <h3>纵向加速度</h3>
-          <div class="data-value">{{ sensorData.longitudinalAccel.toFixed(2) }} m/s²</div>
+          <div class="data-value">{{ (sensorData?.longitudinalAccel || 0).toFixed(2) }} m/s²</div>
         </div>
 
         <div class="data-card glass">
           <h3>垂直加速度</h3>
-          <div class="data-value">{{ sensorData.verticalAccel.toFixed(2) }} m/s²</div>
+          <div class="data-value">{{ (sensorData?.verticalAccel || 0).toFixed(2) }} m/s²</div>
         </div>
 
         <div class="data-card glass">
