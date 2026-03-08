@@ -302,6 +302,9 @@
     <!-- Three.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
+    <!-- marked Markdown 解析器 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
     <!-- Vue.js -->
     <script src="https://cdn.jsdelivr.net/npm/vue@3.2.47/dist/vue.global.prod.min.js"></script>
 
@@ -379,7 +382,7 @@
     </div>
 
     <script>
-        const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+        const { createApp, ref, computed, onMounted, onUnmounted, reactive, watch } = Vue;
 
         createApp({
             setup() {
@@ -388,17 +391,73 @@
                 const drawerOpen = ref(false);
                 const showSidePanel = ref(false);
                 const currentPage = ref('home');
+                const selectedSimulator = ref('cola'); // cola, water, coffee, rice, soup
+                const qualitySetting = ref('high'); // high, medium, low
+                const sensitivity = ref(1.0);
 
                 // 传感器数据
-                const lateralAccel = ref(0);
-                const longitudinalAccel = ref(0);
-                const verticalAccel = ref(0);
+                const sensorData = reactive({
+                    lateralAccel: 0,
+                    longitudinalAccel: 0,
+                    verticalAccel: 0,
+                    gyroX: 0,
+                    gyroY: 0,
+                    gyroZ: 0
+                });
+
+                // 计算数据
                 const gForce = ref(0);
                 const spillPercentage = ref(0);
+                const smoothScore = ref(100);
+                const events = ref([]);
+
+                // 历史记录
+                const historyRecords = ref([]);
+                const currentSession = reactive({
+                    startTime: null,
+                    endTime: null,
+                    maxG: 0,
+                    avgG: 0,
+                    events: [],
+                    sensorData: []
+                });
+
+                // 更新日志
+                const changelog = ref(`
+# 更新日志
+
+## v2.0.0 - 二次元现代化重构
+- 🎨 二次元配色系统（粉色/紫色/青色）
+- ✨ 玻璃拟态设计（Glassmorphism）
+- 🎮 Three.js 3D 可乐杯模拟
+- 📱 侧边抽屉式菜单
+- 🖥️ 优化全屏功能
+- 🚀 清理冗余代码
+
+## v1.5.0 - 像素小兔子
+- 🐰 像素风格小兔子定位图标
+- 🗺️ 高德卫星图 + 路网混合
+- 🎯 3D 视图模式
+
+## v1.0.0 - PRTS 终端风格
+-  PRTS 终端风格 UI
+- 🗺️ 高德地图集成
+- 📊 实时传感器数据
+        `);
 
                 // Three.js 变量
-                let scene, camera, renderer, cup, liquid;
+                let scene, camera, renderer, cupGroup, liquid, particles = [];
                 let animationId;
+                let lastTime = 0;
+
+                // 物理参数
+                const liquidProperties = {
+                    cola: { viscosity: 0.001, density: 1000, surfaceTension: 0.072, color: 0x8B4513 },
+                    water: { viscosity: 0.001, density: 1000, surfaceTension: 0.072, color: 0x4FC3F7 },
+                    coffee: { viscosity: 0.002, density: 1010, surfaceTension: 0.070, color: 0x6F4E37 },
+                    rice: { viscosity: 0.1, density: 800, surfaceTension: 0, color: 0xFFFFFF, isParticle: true },
+                    soup: { viscosity: 0.005, density: 1020, surfaceTension: 0.065, color: 0xFFD54F }
+                };
 
                 // 方法
                 const toggleDrawer = () => {
@@ -424,11 +483,16 @@
                 const showPage = (page) => {
                     currentPage.value = page;
                     drawerOpen.value = false;
-                    // TODO: 实现页面切换逻辑
+                    if (page === 'history') {
+                        loadHistory();
+                    }
                 };
 
                 const startSimulation = () => {
                     isRunning.value = true;
+                    currentSession.startTime = new Date();
+                    currentSession.events = [];
+                    currentSession.sensorData = [];
                     initSensors();
                     animate();
                 };
@@ -436,6 +500,80 @@
                 const stopSimulation = () => {
                     isRunning.value = false;
                     cancelAnimationFrame(animationId);
+
+                    // 保存历史记录
+                    if (currentSession.startTime) {
+                        saveHistory();
+                    }
+                };
+
+                // 保存历史记录
+                const saveHistory = () => {
+                    const record = {
+                        id: Date.now(),
+                        date: currentSession.startTime,
+                        duration: currentSession.endTime ?
+                            (currentSession.endTime - currentSession.startTime) / 1000 : 0,
+                        maxG: currentSession.maxG,
+                        avgG: currentSession.avgG,
+                        simulator: selectedSimulator.value,
+                        events: currentSession.events.length,
+                        smoothScore: smoothScore.value
+                    };
+
+                    historyRecords.value.unshift(record);
+
+                    // 使用 IndexedDB 存储
+                    saveToIndexedDB(record);
+                };
+
+                // IndexedDB 存储
+                let db;
+                const initIndexedDB = () => {
+                    const request = indexedDB.open('ColaSimulatorDB', 1);
+                    request.onupgradeneeded = (e) => {
+                        db = e.target.result;
+                        if (!db.objectStoreNames.contains('history')) {
+                            db.createObjectStore('history', { keyPath: 'id' });
+                        }
+                    };
+                    request.onsuccess = (e) => {
+                        db = e.target.result;
+                        loadHistory();
+                    };
+                };
+
+                const saveToIndexedDB = (record) => {
+                    if (!db) return;
+                    const transaction = db.transaction(['history'], 'readwrite');
+                    const store = transaction.objectStore('history');
+                    store.add(record);
+                };
+
+                const loadHistory = () => {
+                    if (!db) return;
+                    const transaction = db.transaction(['history'], 'readonly');
+                    const store = transaction.objectStore('history');
+                    const request = store.getAll();
+                    request.onsuccess = () => {
+                        historyRecords.value = request.result.sort((a, b) => b.date - a.date);
+                    };
+                };
+
+                const deleteHistory = (id) => {
+                    if (!db) return;
+                    const transaction = db.transaction(['history'], 'readwrite');
+                    const store = transaction.objectStore('history');
+                    store.delete(id);
+                    loadHistory();
+                };
+
+                const clearHistory = () => {
+                    if (!db) return;
+                    const transaction = db.transaction(['history'], 'readwrite');
+                    const store = transaction.objectStore('history');
+                    store.clear();
+                    historyRecords.value = [];
                 };
 
                 // 初始化 Three.js 场景
