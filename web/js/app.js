@@ -1,0 +1,369 @@
+/**
+ * 可乐模拟器 - 主应用入口
+ * 二次元现代化版本
+ */
+
+// 应用状态
+const AppState = {
+  isRunning: false,
+  currentPage: 'home',
+  drawerOpen: false,
+  showSidePanel: false,
+  selectedSimulator: 'cola',
+  qualitySetting: 'high',
+  sensitivity: 1.0
+};
+
+// 传感器数据
+const SensorData = {
+  lateralAccel: 0,
+  longitudinalAccel: 0,
+  verticalAccel: 0,
+  gyroX: 0,
+  gyroY: 0,
+  gyroZ: 0
+};
+
+// 计算数据
+const CalculatedData = {
+  gForce: 0,
+  spillPercentage: 0,
+  smoothScore: 100,
+  events: []
+};
+
+// 当前会话
+const CurrentSession = {
+  startTime: null,
+  endTime: null,
+  maxG: 0,
+  avgG: 0,
+  events: [],
+  sensorData: []
+};
+
+// 历史记录
+let HistoryRecords = [];
+
+// Vue 应用实例
+let app = null;
+
+/**
+ * 初始化 Vue 应用
+ */
+function initVueApp() {
+  const { createApp, ref, reactive, onMounted, onUnmounted } = Vue;
+
+  app = createApp({
+    setup() {
+      // 响应式状态
+      const isRunning = ref(AppState.isRunning);
+      const drawerOpen = ref(AppState.drawerOpen);
+      const showSidePanel = ref(AppState.showSidePanel);
+      const currentPage = ref(AppState.currentPage);
+      const selectedSimulator = ref(AppState.selectedSimulator);
+      const qualitySetting = ref(AppState.qualitySetting);
+      const sensitivity = ref(AppState.sensitivity);
+
+      // 传感器数据
+      const sensorData = reactive(SensorData);
+      const gForce = ref(CalculatedData.gForce);
+      const spillPercentage = ref(CalculatedData.spillPercentage);
+      const smoothScore = ref(CalculatedData.smoothScore);
+      const events = ref(CalculatedData.events);
+      const historyRecords = ref(HistoryRecords);
+
+      // 更新日志内容
+      const changelog = ref(`
+# 更新日志
+
+## v2.0.0 - 二次元现代化重构
+- 🎨 二次元配色系统（粉色/紫色/青色）
+- ✨ 玻璃拟态设计（Glassmorphism）
+- 🎮 Three.js 3D 可乐杯模拟
+- 📱 侧边抽屉式菜单
+- 🖥️ 优化全屏功能
+- 🚀 清理冗余代码
+- 📦 模块化代码架构
+
+## v1.5.0 - 像素小兔子
+- 🐰 像素风格小兔子定位图标
+- 🗺️ 高德卫星图 + 路网混合
+- 🎯 3D 视图模式
+
+## v1.0.0 - PRTS 终端风格
+- 🖥️ PRTS 终端风格 UI
+- 🗺️ 高德地图集成
+- 📊 实时传感器数据
+      `);
+
+      // 方法
+      const toggleDrawer = () => {
+        drawerOpen.value = !drawerOpen.value;
+      };
+
+      const toggleSidePanel = () => {
+        showSidePanel.value = !showSidePanel.value;
+      };
+
+      const toggleFullscreen = async () => {
+        if (!document.fullscreenElement) {
+          try {
+            await document.documentElement.requestFullscreen();
+          } catch (e) {
+            console.error('Fullscreen error:', e);
+          }
+        } else {
+          await document.exitFullscreen();
+        }
+      };
+
+      const showPage = (page) => {
+        currentPage.value = page;
+        drawerOpen.value = false;
+        
+        // 页面加载逻辑
+        if (page === 'history') {
+          loadHistoryFromUI();
+        }
+      };
+
+      const startSimulation = () => {
+        AppState.isRunning = true;
+        isRunning.value = true;
+        CurrentSession.startTime = new Date();
+        CurrentSession.events = [];
+        CurrentSession.sensorData = [];
+        
+        // 初始化传感器
+        SensorService.init(handleSensorData);
+        SensorService.start();
+        
+        // 启动 Three.js 动画
+        ThreeEngine.startAnimation();
+      };
+
+      const stopSimulation = () => {
+        AppState.isRunning = false;
+        isRunning.value = false;
+        
+        // 停止传感器
+        SensorService.stop();
+        
+        // 停止 Three.js 动画
+        ThreeEngine.stopAnimation();
+        
+        // 保存历史记录
+        if (CurrentSession.startTime) {
+          saveHistory();
+        }
+      };
+
+      const changeSimulator = (type) => {
+        AppState.selectedSimulator = type;
+        selectedSimulator.value = type;
+        ThreeEngine.updateLiquidType(type);
+      };
+
+      const changeQuality = (quality) => {
+        AppState.qualitySetting = quality;
+        qualitySetting.value = quality;
+        ThreeEngine.setQuality(quality);
+      };
+
+      // 生命周期
+      onMounted(() => {
+        // 初始化 Three.js
+        ThreeEngine.init();
+        
+        // 初始化 IndexedDB
+        Storage.initDB();
+        
+        // 加载历史记录
+        loadHistoryFromUI();
+      });
+
+      onUnmounted(() => {
+        stopSimulation();
+        ThreeEngine.dispose();
+      });
+
+      return {
+        isRunning,
+        drawerOpen,
+        showSidePanel,
+        currentPage,
+        selectedSimulator,
+        qualitySetting,
+        sensitivity,
+        sensorData,
+        gForce,
+        spillPercentage,
+        smoothScore,
+        events,
+        historyRecords,
+        changelog,
+        toggleDrawer,
+        toggleSidePanel,
+        toggleFullscreen,
+        showPage,
+        startSimulation,
+        stopSimulation,
+        changeSimulator,
+        changeQuality
+      };
+    }
+  });
+
+  return app;
+}
+
+/**
+ * 处理传感器数据
+ */
+function handleSensorData(data) {
+  SensorData.lateralAccel = data.lateral || 0;
+  SensorData.longitudinalAccel = data.longitudinal || 0;
+  SensorData.verticalAccel = data.vertical || 0;
+  SensorData.gyroX = data.gyroX || 0;
+  SensorData.gyroY = data.gyroY || 0;
+  SensorData.gyroZ = data.gyroZ || 0;
+
+  // 计算 G 值
+  const totalAccel = Math.sqrt(
+    SensorData.lateralAccel ** 2 +
+    SensorData.longitudinalAccel ** 2 +
+    SensorData.verticalAccel ** 2
+  );
+  CalculatedData.gForce = totalAccel / 9.80665;
+
+  // 更新最大值
+  if (CalculatedData.gForce > CurrentSession.maxG) {
+    CurrentSession.maxG = CalculatedData.gForce;
+  }
+
+  // 计算撒出百分比
+  const threshold = 5;
+  if (totalAccel > threshold) {
+    CalculatedData.spillPercentage = Math.min((totalAccel - threshold) / 10, 1);
+  } else {
+    CalculatedData.spillPercentage = 0;
+  }
+
+  // 事件检测
+  EventDetector.detect(totalAccel, SensorData);
+
+  // 保存传感器数据
+  if (AppState.isRunning) {
+    CurrentSession.sensorData.push({
+      timestamp: Date.now(),
+      ...SensorData
+    });
+  }
+
+  // 更新 Three.js 液体效果
+  ThreeEngine.updateLiquid(SensorData.lateralAccel, SensorData.longitudinalAccel);
+
+  // 更新 UI（如果 Vue 已初始化）
+  if (app) {
+    app._instance.data.gForce.value = CalculatedData.gForce;
+    app._instance.data.spillPercentage.value = CalculatedData.spillPercentage;
+  }
+}
+
+/**
+ * 保存历史记录
+ */
+function saveHistory() {
+  CurrentSession.endTime = new Date();
+  
+  const duration = CurrentSession.endTime - CurrentSession.startTime;
+  const avgG = CurrentSession.sensorData.length > 0 ?
+    CurrentSession.sensorData.reduce((sum, d) => {
+      const accel = Math.sqrt(d.lateralAccel ** 2 + d.longitudinalAccel ** 2 + d.verticalAccel ** 2);
+      return sum + accel / 9.80665;
+    }, 0) / CurrentSession.sensorData.length : 0;
+
+  const record = {
+    id: Date.now(),
+    date: CurrentSession.startTime.toISOString(),
+    duration: duration / 1000,
+    maxG: CurrentSession.maxG,
+    avgG: avgG,
+    simulator: AppState.selectedSimulator,
+    events: CurrentSession.events.length,
+    smoothScore: CalculatedData.smoothScore
+  };
+
+  HistoryRecords.unshift(record);
+  Storage.saveHistory(record);
+
+  // 更新 UI
+  if (app && app._instance.data.historyRecords) {
+    app._instance.data.historyRecords.value = HistoryRecords;
+  }
+}
+
+/**
+ * 加载历史记录
+ */
+function loadHistoryFromUI() {
+  Storage.loadHistory().then(records => {
+    HistoryRecords = records.sort((a, b) => new Date(b.date) - new Date(a.date));
+    if (app && app._instance.data.historyRecords) {
+      app._instance.data.historyRecords.value = HistoryRecords;
+    }
+  });
+}
+
+/**
+ * 删除历史记录
+ */
+function deleteHistoryRecord(id) {
+  Storage.deleteHistory(id).then(() => {
+    HistoryRecords = HistoryRecords.filter(r => r.id !== id);
+    if (app && app._instance.data.historyRecords) {
+      app._instance.data.historyRecords.value = HistoryRecords;
+    }
+  });
+}
+
+/**
+ * 清空历史记录
+ */
+function clearAllHistory() {
+  if (confirm('确定要清空所有历史记录吗？')) {
+    Storage.clearHistory().then(() => {
+      HistoryRecords = [];
+      if (app && app._instance.data.historyRecords) {
+        app._instance.data.historyRecords.value = HistoryRecords;
+      }
+    });
+  }
+}
+
+// 导出全局函数
+window.deleteHistoryRecord = deleteHistoryRecord;
+window.clearAllHistory = clearAllHistory;
+
+/**
+ * 初始化应用
+ */
+function initApp() {
+  console.log('[App] 初始化应用...');
+  
+  // 创建 Vue 应用
+  const vueApp = initVueApp();
+  
+  // 挂载应用
+  vueApp.mount('#app');
+  
+  console.log('[App] 应用初始化完成');
+}
+
+// DOM 加载完成后初始化
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
